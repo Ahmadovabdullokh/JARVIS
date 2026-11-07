@@ -1,0 +1,39 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+exclude = [
+    ".venv",
+    "data",
+    "build",
+    "dist",
+    "dist_installer",
+    "models",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "app/tools/*",
+    "app/ui_theme.py",
+]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+files = ["app"]

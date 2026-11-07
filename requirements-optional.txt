@@ -1,0 +1,2 @@
+# Optional offline / advanced integrations
+faster-whisper>=1.0

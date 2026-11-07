@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+      - name: Compile
+        run: .\.venv\Scripts\python.exe -m compileall -q app launcher.py tests
+      - name: Lint
+        run: .\.venv\Scripts\python.exe -m ruff check app tests launcher.py
+      - name: Type check
+        run: .\.venv\Scripts\python.exe -m mypy app
+        continue-on-error: true
+      - name: Run tests with coverage
+        run: |
+          .\.venv\Scripts\python.exe -m coverage run -m unittest discover -s tests -v
+          .\.venv\Scripts\python.exe -m coverage report --skip-covered
+      - name: Dependency audit
+        run: .\.venv\Scripts\python.exe -m pip_audit
+        continue-on-error: true
+      - name: Diagnostics
+        run: .\.venv\Scripts\python.exe -m app.doctor
+        continue-on-error: true

@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+.env
+config/config.json
+data/
+models/
+*.log
+build/
+dist/
+dist_installer/
+.pytest_cache/
+.ruff_cache/

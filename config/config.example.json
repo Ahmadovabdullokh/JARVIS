@@ -1,0 +1,135 @@
+{
+    "jarvis_name": "JARVIS",
+
+    "wake_words": [
+        "джарвис",
+        "jarvis",
+        "джарвиз",
+        "дарвис"
+    ],
+
+    "require_wake_word": false,
+    "wake_word_cooldown": 1.5,
+    "wake_ack": "Слушаю, сэр.",
+    "follow_up_seconds": 8.0,
+
+    "persona": {
+        "name": "JARVIS",
+        "address": "сэр",
+        "humor": "subtle",
+        "verbosity": "concise",
+        "language": "ru"
+    },
+
+    "groq_api_key": "",
+    "groq_model": "whisper-large-v3-turbo",
+    "deepseek_api_key": "",
+    "deepseek_model": "deepseek-chat",
+    "stt_prompt": "Джарвис, открой браузер. Джарвис, статус систем. Джарвис, VS Code. Джарвис, Copilot. Джарвис, который час.",
+    "stt_language": "ru",
+    "stt_noise_adapt_k": 3.0,
+    "stt_noise_max_ratio": 8.0,
+
+    "chat_mode": "tasks",
+    "transcript_preview": false,
+
+    "audio_sample_rate": 16000,
+    "silence_threshold": 0.005,
+    "min_speech_seconds": 0.25,
+    "max_speech_seconds": 12.0,
+    "silence_duration": 0.7,
+    "initial_silence_seconds": 1.2,
+
+    "use_llm": true,
+
+    "llm_model": "deepseek-chat",
+    "vision_model": "qwen/qwen3.8-27b",
+    "llm_history_size": 20,
+
+    "stt_local_model": "",
+    "stt_local_device": "cpu",
+    "stt_local_compute_type": "int8",
+
+    "llm": {
+        "provider": "deepseek",
+        "base_url": "",
+        "api_key": "",
+        "model": "deepseek-chat",
+        "enabled": true,
+        "fallback_base_url": "",
+        "fallback_model": "",
+        "fallback_api_key": "",
+        "auto_fallback": true,
+        "max_retries": 2,
+        "retry_backoff": 0.8,
+        "parallel_tool_calls": false,
+        "request_timeout": 180,
+        "session_history": 20
+    },
+
+    "memory_size": 50,
+
+    "tts_rate": 185,
+    "tts_voice": "en-US-AndrewMultilingualNeural",
+    "tts_pitch": "-8Hz",
+    "tts_voices": [
+        "en-US-AndrewMultilingualNeural"
+    ],
+    "tts_offline_fallback": false,
+
+    "agent": {
+        "autonomy": "balanced",
+        "max_iterations": 12,
+        "max_tokens": 3000,
+        "tool_result_limit": 16000,
+        "tool_timeout_seconds": 120,
+        "max_tools_per_request": 100,
+        "code_tools_per_request": 28,
+        "category_planning": true
+    },
+
+    "safety": {
+        "autonomy": "balanced",
+        "confirm_destructive": true,
+        "redact_secrets": true,
+        "dry_run": false,
+        "max_output_chars": 12000,
+        "emergency_hotkey": "<ctrl>+<alt>+j",
+        "audit_log": "data/audit.log",
+        "audit_max_bytes": 2097152,
+        "taint_tracking": true,
+        "taint_tools": [],
+        "tool_policies": {},
+        "session_allow": [],
+        "session_deny": []
+    },
+
+    "code": {
+        "enabled": true,
+        "backend": "deepseek",
+        "project": "",
+        "max_iterations": 60,
+        "cli_args": ["--allow-all-tools"],
+        "timeout": 900,
+        "fallback": true
+    },
+
+    "tools": {
+        "enabled_categories": [],
+        "disabled_tools": []
+    },
+
+    "integrations": {
+        "smtp_host": "",
+        "smtp_port": 587,
+        "smtp_user": "",
+        "smtp_password": "",
+        "imap_host": "",
+        "imap_user": "",
+        "imap_password": "",
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "discord_webhook": "",
+        "slack_webhook": ""
+    }
+}
