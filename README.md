@@ -60,17 +60,37 @@
   до 12 секунд, пауза 0.7 c, STT-подсказка с ключевыми терминами;
   режим «показать команду перед отправкой» в конфиге (`transcript_preview`)
   и на вкладке НАСТРОЙКИ.
-- Интерфейс: современный Tkinter HUD с переиспользуемыми Canvas-элементами,
-  мягким свечением арк-реактора, орбитальными частицами, плавной волной и
-  VU-индикатором микрофона. Анимация идёт на 25 fps, останавливается в
-  свёрнутом окне и не пересоздаёт объекты каждый кадр, поэтому не грузит
-  CPU. Есть телеметрия, чат, вкладки ЧАТ, АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ
-  и НАСТРОЙКИ, быстрые действия, каталог инструментов, диагностика и
-  tray-иконка.
+- Интерфейс: по умолчанию новый HUD на WebView2 (HTML/CSS/JS) —
+  frameless-окно, арк-реактор на Canvas с анимацией 60 fps, мягкое
+  свечение, телеметрия, чат, разделы ЧАТ, АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ
+  и НАСТРОЙКИ, поиск команд (`Ctrl+K`), tray-иконка и быстрые действия.
+  Старый Tkinter HUD сохранён как fallback: `scripts\start.ps1 -Tk`.
+  WebView2 уже есть в Windows 11; на Windows 10 может потребоваться
+  Evergreen WebView2 Runtime. Pythonnet и .NET для нового UI не нужны.
 
 Локальные модели не обязательны, но можно подключить Ollama. Папку
 `models/vosk-model-small-ru-0.22` можно удалить: Vosk больше не
 используется.
+
+## Новый интерфейс
+
+Новый HUD использует нативный WebView2 (пакет `webview2`, Win32) и
+локальные HTML/CSS/JS-ассеты из `ui/`. Python-слой общается с ним через
+`app/ui_bridge.py`: `bootstrap`, `poll`, `send_message`, `stop`,
+`cancel_task`, `save_settings`, `get_journal`, `run_doctor` и
+`window_action`. Ответы приходят пакетом, поэтому UI не зависит от
+медленных операций агента.
+
+Запуск:
+
+```powershell
+scripts\start.ps1        # новый WebView2 HUD
+scripts\start.ps1 -Tk    # старый Tkinter HUD
+```
+
+Если WebView2 Runtime недоступен, `launcher_web.py` автоматически
+переключается на Tkinter. Сборка EXE: `scripts\build.ps1`; в
+`jarvis.spec` уже включены `ui/` и DLL WebView2.
 
 ## Расширенные возможности
 
@@ -166,11 +186,13 @@ $env:GROQ_API_KEY = "ваш_ключ_groq"
 ## Запуск
 
 ```powershell
-.\.venv\Scripts\python.exe launcher.py
+scripts\start.ps1
 ```
 
-Появится HUD: арк-реактор, статус, телеметрия и вкладки «ЧАТ», «АГЕНТ»,
-«ЗАДАЧИ», «КОМАНДЫ», «ЖУРНАЛ» и «НАСТРОЙКИ».
+По умолчанию открывается новый WebView2 HUD: арк-реактор, статус,
+телеметрия и разделы «ЧАТ», «АГЕНТ», «ЗАДАЧИ», «КОМАНДЫ», «ЖУРНАЛ» и
+«НАСТРОЙКИ». Старый Tkinter HUD: `scripts\start.ps1 -Tk` или
+`.\.venv\Scripts\python.exe launcher.py`.
 
 ## Режим работы
 
@@ -379,7 +401,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 `doctor_check` проверяет Python, конфиг, ключи DeepSeek и Groq,
 зависимости, Tesseract, ffmpeg, Playwright, права на `data/` и
 свободное место.
-`scripts\build.ps1` собирает `dist\JARVIS.exe` через PyInstaller;
+`scripts\build.ps1` собирает `dist\JARVIS\JARVIS.exe` через PyInstaller
+(onedir, без распаковки во временную папку);
 `packaging\jarvis.iss` — заготовка установщика Inno Setup.
 
 ## Если команда сообщает «Открыл», а окна не видно
@@ -425,7 +448,7 @@ JARVIS_SLACK_WEBHOOK
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m coverage run -m unittest discover -s tests
 .\.venv\Scripts\python.exe -m coverage report
-.\.venv\Scripts\python.exe -m ruff check app tests launcher.py
+.\.venv\Scripts\python.exe -m ruff check app tests launcher.py launcher_web.py
 .\.venv\Scripts\python.exe -m mypy app
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 pre-commit install

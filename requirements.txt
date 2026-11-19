@@ -70,3 +70,8 @@ playwright==1.64.1
 # Desktop UX and offline voice fallback
 pystray==0.19.5
 pyttsx3==2.98
+
+# Native WebView2 HUD via pywebview (EdgeChromium backend)
+pywebview==5.4
+pythonnet==3.0.5
+clr_loader==0.2.10

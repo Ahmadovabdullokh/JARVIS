@@ -2363,9 +2363,14 @@ def _center_window(root):
     root.geometry(f"{width}x{height}+{x}+{y}")
 
 
-if __name__ == "__main__":
+def run_tk():
     _enable_dpi_awareness()
     root = tk.Tk()
     app = JarvisWindow(root)
     _center_window(root)
     root.mainloop()
+    return app
+
+
+if __name__ == "__main__":
+    run_tk()

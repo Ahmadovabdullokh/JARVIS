@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -9,16 +9,26 @@ hiddenimports += [
     "pyttsx3",
     "winotify",
     "PIL._tkinter_finder",
+    "webview",
+    "webview.platforms.winforms",
+    "webview.platforms.edgechromium",
+    "pythonnet",
+    "clr_loader",
+    "pythoncom",
+    "win32gui",
+    "win32con",
 ]
 
 datas = [
     ("config/config.example.json", "config"),
+    ("ui", "ui"),
 ]
 datas += collect_data_files("imageio_ffmpeg")
+datas += collect_data_files("webview")
 
 
 a = Analysis(
-    ["launcher.py"],
+    ["launcher_web.py"],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -29,15 +39,13 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
-
 pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="JARVIS",
     debug=False,
     bootloader_ignore_signals=False,
@@ -51,4 +59,14 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="JARVIS",
 )

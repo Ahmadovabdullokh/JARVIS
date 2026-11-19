@@ -1,0 +1,38 @@
+:root {
+  --bg: #03060d;
+  --bg-soft: #060b16;
+  --panel: #0a1220;
+  --panel-alt: #0e1a2c;
+  --card: #101d31;
+  --card-alt: #14243c;
+  --border: #1d3a5c;
+  --border-soft: #12263d;
+  --grid: #0b1929;
+  --text: #e8f1fb;
+  --muted: #7b93ad;
+  --dim: #3d5570;
+  --accent: #2ee6ff;
+  --accent-soft: #8bf3ff;
+  --accent-dark: #0e7490;
+  --violet: #b18cff;
+  --violet-dark: #6d28d9;
+  --error: #ff6b6b;
+  --warning: #ffc857;
+  --success: #3df5a6;
+  --user-bg: #0a2536;
+  --assistant-bg: #0a1626;
+  --error-bg: #2a0f14;
+  --glass: rgba(11, 22, 38, 0.78);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --font: "Segoe UI", "Inter", sans-serif;
+  --mono: "Cascadia Mono", "Consolas", monospace;
+  --speed: 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --speed: 0ms;
+  }
+}

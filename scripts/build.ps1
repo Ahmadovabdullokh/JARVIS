@@ -10,4 +10,4 @@ if (-not (Test-Path -LiteralPath $Python)) {
 & $Python -m pip install pyinstaller
 & $Python -m PyInstaller --noconfirm jarvis.spec
 
-Write-Host "[JARVIS] Build complete: dist\JARVIS.exe"
+Write-Host "[JARVIS] Build complete: dist\JARVIS\JARVIS.exe"

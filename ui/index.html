@@ -1,0 +1,439 @@
+﻿<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>J.A.R.V.I.S.</title>
+  <script>
+    (function () {
+      window.__jarvisErrors = [];
+      function report(kind, message, source, line, column, stack) {
+        var payload = {
+          kind: kind,
+          message: String(message || ""),
+          source: String(source || ""),
+          line: line || 0,
+          column: column || 0,
+          stack: String(stack || "")
+        };
+        window.__jarvisErrors.push(payload);
+        try {
+          if (window.JarvisApi) {
+            window.JarvisApi.rpc("client_error", payload);
+          }
+        } catch (error) {
+          /* bridge is not ready yet */
+        }
+        if (document.body) {
+          var box = document.createElement("pre");
+          box.id = "js-error";
+          box.style.cssText = "position:fixed;left:8px;right:8px;bottom:4px;z-index:9999;max-height:140px;overflow:auto;margin:0;padding:8px;background:#2a0f14;color:#ffb4b4;font:10px Consolas;white-space:pre-wrap";
+          box.textContent =
+            kind + ": " + message + " @ " + source + ":" + line;
+          document.body.appendChild(box);
+        }
+      }
+      window.addEventListener("error", function (event) {
+        report(
+          "error",
+          event.message,
+          event.filename,
+          event.lineno,
+          event.colno,
+          event.error && event.error.stack
+        );
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        var reason = event.reason;
+        report(
+          "rejection",
+          String(reason),
+          "",
+          0,
+          0,
+          reason && reason.stack
+        );
+      });
+    })();
+  </script>
+  <link rel="stylesheet" href="css/tokens.css?v=20261119c">
+  <link rel="stylesheet" href="css/base.css?v=20261119c">
+  <link rel="stylesheet" href="css/layout.css?v=20261119c">
+  <link rel="stylesheet" href="css/components.css?v=20261119c">
+  <link rel="stylesheet" href="css/pages.css?v=20261119c">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="titlebar-brand">
+        <span class="brand-mark"></span>
+        <span class="brand-name">J.A.R.V.I.S.</span>
+        <span class="brand-version">MK IX</span>
+      </div>
+      <div class="titlebar-live">
+        <span class="status-dot" id="top-status-dot"></span>
+        <span id="top-status-label">ЗАГРУЗКА</span>
+      </div>
+      <div class="titlebar-metrics">
+        <span><b>CPU</b> <span id="top-cpu">—</span></span>
+        <span><b>RAM</b> <span id="top-ram">—</span></span>
+        <span><b>BAT</b> <span id="top-bat">—</span></span>
+        <span class="titlebar-clock" id="clock">--:--:--</span>
+      </div>
+      <div class="window-controls no-drag">
+        <button class="window-button" data-window-action="minimize" title="Свернуть">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8"/></svg>
+        </button>
+        <button class="window-button" data-window-action="maximize" title="Развернуть">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8"/></svg>
+        </button>
+        <button class="window-button window-button-close" data-window-action="hide" title="Скрыть в трей">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="reactor-panel">
+          <div class="reactor-frame">
+            <canvas id="reactor" width="240" height="240"></canvas>
+            <div class="reactor-scan"></div>
+          </div>
+          <div class="reactor-caption">
+            <span class="eyebrow">АРК-РЕАКТОР</span>
+            <strong id="reactor-status">STARTING</strong>
+            <span id="reactor-mode">TASKS</span>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Разделы">
+          <button class="nav-item active" data-page="chat">
+            <span class="nav-icon">◈</span>
+            <span><b>Чат</b><small>Связь и команды</small></span>
+          </button>
+          <button class="nav-item" data-page="agent">
+            <span class="nav-icon">⌁</span>
+            <span><b>Агент</b><small>Шаги и инструменты</small></span>
+          </button>
+          <button class="nav-item" data-page="tasks">
+            <span class="nav-icon">▦</span>
+            <span><b>Задачи</b><small>Очередь и статусы</small></span>
+          </button>
+          <button class="nav-item" data-page="commands">
+            <span class="nav-icon">⌘</span>
+            <span><b>Команды</b><small>Каталог возможностей</small></span>
+          </button>
+          <button class="nav-item" data-page="journal">
+            <span class="nav-icon">≡</span>
+            <span><b>Журнал</b><small>События и аудит</small></span>
+          </button>
+          <button class="nav-item" data-page="settings">
+            <span class="nav-icon">⚙</span>
+            <span><b>Настройки</b><small>Режимы и параметры</small></span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="mic-label">
+            <span>МИКРОФОН</span>
+            <span id="mic-value">0%</span>
+          </div>
+          <div class="mic-track"><div class="mic-fill" id="mic-fill"></div></div>
+          <div class="connection-line">
+            <span class="status-dot small" id="connection-dot"></span>
+            <span id="connection-label">Подключение к ядру…</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="page active" data-page-panel="chat">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">КАНАЛ СВЯЗИ</span>
+              <h1>Чат с JARVIS</h1>
+              <p>Задача словами, голосом или готовой командой.</p>
+            </div>
+            <div class="page-head-actions">
+              <span class="mode-chip" id="mode-chip">TASKS</span>
+              <button class="ghost-button" id="clear-chat">Очистить</button>
+            </div>
+          </div>
+
+          <div class="chat-surface">
+            <div class="message-list" id="message-list"></div>
+            <div class="chat-empty" id="chat-empty">
+              <span class="empty-orbit"></span>
+              <b>Все системы в норме, сэр.</b>
+              <p>Напишите задачу или выберите быстрый сценарий ниже.</p>
+            </div>
+            <div class="composer">
+              <div class="quick-actions" id="quick-actions">
+                <button data-prompt="Открой PythonProject9 в VS Code и проверь проект на ошибки">VS CODE</button>
+                <button data-prompt="Проверь код проекта PythonProject9, исправь найденные ошибки и запусти тесты">АГЕНТ КОДА</button>
+                <button data-prompt="Что ты умеешь? Перечисли коротко.">ЧТО ТЫ УМЕЕШЬ</button>
+                <button data-prompt="Сделай скриншот и опиши, что на экране.">ЭКРАН</button>
+              </div>
+              <div class="composer-row">
+                <select id="mode-select" class="select" aria-label="Режим">
+                  <option value="chat">Просто чат</option>
+                  <option value="tasks" selected>Простые задачи</option>
+                  <option value="code">Код</option>
+                </select>
+                <textarea id="chat-input" rows="3" placeholder="Напишите задачу и нажмите Enter…"></textarea>
+                <div class="composer-buttons">
+                  <button class="primary-button" id="send-button">Отправить</button>
+                  <button class="danger-button" id="stop-button">Стоп</button>
+                </div>
+              </div>
+              <div class="composer-hint">
+                <label class="check-line"><input type="checkbox" id="preview-toggle"> Показывать голосовую команду</label>
+                <span>Enter — отправить · Shift+Enter — новая строка · Ctrl+K — команды</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" data-page-panel="agent">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">ИСПОЛНИТЕЛЬНЫЙ КОНТУР</span>
+              <h1>Агент</h1>
+              <p>Живой timeline: итерации, инструменты, ответы.</p>
+            </div>
+            <div class="page-head-actions">
+              <span class="mode-chip" id="agent-mode-chip">TASKS</span>
+              <button class="ghost-button" data-open-page="tasks">Задачи</button>
+            </div>
+          </div>
+          <div class="metric-strip">
+            <div class="metric-card"><span>СОСТОЯНИЕ</span><b id="agent-status">—</b></div>
+            <div class="metric-card"><span>ИТЕРАЦИИ</span><b id="agent-iterations">0</b></div>
+            <div class="metric-card"><span>ВЫЗОВЫ</span><b id="agent-tools">0</b></div>
+            <div class="metric-card"><span>ПОСЛЕДНИЙ ОТВЕТ</span><b id="agent-last">—</b></div>
+          </div>
+          <div class="timeline" id="agent-timeline"></div>
+          <div class="empty-state" id="agent-empty">
+            <b>Timeline пока пуст</b>
+            <p>Отправьте задачу — здесь появятся шаги агента.</p>
+          </div>
+        </section>
+
+        <section class="page" data-page-panel="tasks">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">ОЧЕРЕДЬ РАБОТ</span>
+              <h1>Задачи</h1>
+              <p>Активные, завершённые и отменённые задачи.</p>
+            </div>
+            <div class="page-head-actions">
+              <span class="count-chip" id="tasks-count">0</span>
+              <button class="ghost-button" id="tasks-refresh">Обновить</button>
+            </div>
+          </div>
+          <div class="filter-row" id="task-filter">
+            <button class="filter active" data-task-filter="all">Все</button>
+            <button class="filter" data-task-filter="active">Активные</button>
+            <button class="filter" data-task-filter="done">Завершённые</button>
+            <button class="filter" data-task-filter="failed">Ошибки</button>
+          </div>
+          <div class="tasks-list" id="tasks-list"></div>
+          <div class="empty-state" id="tasks-empty">
+            <b>Задач пока нет</b>
+            <p>Отправьте команду в чат, чтобы создать задачу.</p>
+          </div>
+        </section>
+
+        <section class="page" data-page-panel="commands">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">КАТАЛОГ ВОЗМОЖНОСТЕЙ</span>
+              <h1>Команды</h1>
+              <p>Поиск по инструментам, сценариям и локальным командам.</p>
+            </div>
+            <div class="page-head-actions">
+              <span class="count-chip" id="commands-count">0</span>
+            </div>
+          </div>
+          <div class="command-toolbar">
+            <input id="command-search" class="input" type="search" placeholder="Поиск команды…">
+            <select id="command-category" class="select"><option value="all">Все категории</option></select>
+          </div>
+          <div class="commands-list" id="commands-list"></div>
+        </section>
+
+        <section class="page" data-page-panel="journal">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">ТЕЛЕМЕТРИЯ СОБЫТИЙ</span>
+              <h1>Журнал</h1>
+              <p>События агента, аудит и диагностика системы.</p>
+            </div>
+            <div class="page-head-actions">
+              <button class="ghost-button" id="journal-refresh">Обновить</button>
+              <button class="ghost-button" id="journal-audit">Аудит</button>
+              <button class="ghost-button" id="journal-doctor">Диагностика</button>
+              <button class="ghost-button" id="journal-clear">Очистить</button>
+            </div>
+          </div>
+          <div class="command-toolbar">
+            <input id="journal-search" class="input" type="search" placeholder="Фильтр по тексту…">
+            <div class="filter-row" id="journal-filter">
+              <button class="filter active" data-journal-filter="all">Все</button>
+              <button class="filter" data-journal-filter="tool">Инструменты</button>
+              <button class="filter" data-journal-filter="answer">Ответы</button>
+              <button class="filter" data-journal-filter="system">Система</button>
+            </div>
+          </div>
+          <pre class="journal-view" id="journal-list"></pre>
+        </section>
+
+        <section class="page" data-page-panel="settings">
+          <div class="page-head">
+            <div>
+              <span class="eyebrow">КОНФИГУРАЦИЯ ЯДРА</span>
+              <h1>Настройки</h1>
+              <p>Изменения применяются после перезапуска JARVIS.</p>
+            </div>
+            <div class="page-head-actions">
+              <button class="primary-button" id="settings-save">Сохранить</button>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="settings-card">
+              <h2>Поведение</h2>
+              <label class="field">
+                <span>Автономность</span>
+                <select id="set-autonomy" class="select">
+                  <option value="safe">safe</option>
+                  <option value="balanced">balanced</option>
+                  <option value="full">full</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Режим чата</span>
+                <select id="set-chat-mode" class="select">
+                  <option value="chat">Просто чат</option>
+                  <option value="tasks">Простые задачи</option>
+                  <option value="code">Код</option>
+                </select>
+              </label>
+              <label class="check-line"><input type="checkbox" id="set-confirm"> Подтверждать опасные действия</label>
+              <label class="check-line"><input type="checkbox" id="set-dry-run"> Dry-run для опасных действий</label>
+              <label class="check-line"><input type="checkbox" id="set-taint"> Учитывать недоверенный контент</label>
+              <label class="check-line"><input type="checkbox" id="set-preview"> Показывать голосовую команду</label>
+              <label class="check-line"><input type="checkbox" id="set-category"> Планирование категорий</label>
+            </div>
+
+            <div class="settings-card">
+              <h2>Лимиты агента</h2>
+              <label class="field"><span>max_tools_per_request</span><input id="set-max-tools" class="input" type="number"></label>
+              <label class="field"><span>code_tools_per_request</span><input id="set-code-tools" class="input" type="number"></label>
+              <label class="field"><span>max_iterations</span><input id="set-max-iterations" class="input" type="number"></label>
+              <label class="field"><span>max_tokens</span><input id="set-max-tokens" class="input" type="number"></label>
+              <label class="field"><span>tool_timeout_seconds</span><input id="set-tool-timeout" class="input" type="number"></label>
+            </div>
+
+            <div class="settings-card">
+              <h2>Голос</h2>
+              <label class="field"><span>stt_noise_adapt_k</span><input id="set-noise-k" class="input" type="number" step="0.1"></label>
+              <label class="field"><span>max_speech_seconds</span><input id="set-max-speech" class="input" type="number" step="0.1"></label>
+              <label class="field"><span>silence_duration</span><input id="set-silence" class="input" type="number" step="0.1"></label>
+            </div>
+
+            <div class="settings-card">
+              <h2>Система</h2>
+              <button class="ghost-button wide" id="open-config">Открыть config.json</button>
+              <button class="ghost-button wide" id="open-audit">Открыть audit.log</button>
+              <button class="ghost-button wide" id="run-doctor">Запустить диагностику</button>
+              <button class="danger-button wide" id="stop-assistant">Аварийная остановка</button>
+              <button class="danger-button wide" id="quit-app">Завершить JARVIS</button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="context-panel">
+        <div class="panel-head">
+          <span class="eyebrow">КОНТЕКСТ</span>
+          <span class="live-badge"><span class="status-dot small"></span>LIVE</span>
+        </div>
+
+        <div class="context-status">
+          <div class="context-status-main">
+            <span id="ctx-status">STARTING</span>
+            <small id="ctx-status-description">Запуск подсистем…</small>
+          </div>
+          <div class="context-ring"><span></span></div>
+        </div>
+
+        <div class="context-section">
+          <h3>Телеметрия</h3>
+          <div class="telemetry-grid">
+            <div class="telemetry-cell"><span>CPU</span><b id="ctx-cpu">—</b></div>
+            <div class="telemetry-cell"><span>RAM</span><b id="ctx-ram">—</b></div>
+            <div class="telemetry-cell"><span>DISK</span><b id="ctx-disk">—</b></div>
+            <div class="telemetry-cell"><span>BAT</span><b id="ctx-bat">—</b></div>
+          </div>
+          <div class="uptime-line"><span>UPTIME</span><b id="ctx-uptime">—</b></div>
+        </div>
+
+        <div class="context-section">
+          <div class="section-title"><h3>Активные задачи</h3><button class="text-button" data-open-page="tasks">Все</button></div>
+          <div class="mini-list" id="ctx-tasks"></div>
+        </div>
+
+        <div class="context-section">
+          <h3>Последние инструменты</h3>
+          <div class="mini-list" id="ctx-tools"></div>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span id="footer-connection">Соединение: установка…</span>
+      <span id="footer-mode">Режим: tasks</span>
+      <span id="footer-uptime">UI uptime: 0s</span>
+      <span id="footer-version">JARVIS MK IX · WebView2</span>
+    </footer>
+  </div>
+
+  <div class="palette hidden" id="palette">
+    <div class="palette-backdrop" data-palette-close></div>
+    <div class="palette-box">
+      <div class="palette-search">
+        <span>⌘</span>
+        <input id="palette-input" type="text" placeholder="Найти команду…" autocomplete="off">
+        <button class="palette-close" id="palette-close" title="Закрыть">Esc</button>
+      </div>
+      <div class="palette-list" id="palette-list"></div>
+      <div class="palette-hint">Enter — вставить · Esc — закрыть</div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="js/api.js?v=20261119c"></script>
+  <script src="js/utils.js?v=20261119c"></script>
+  <script src="js/reactor.js?v=20261119c"></script>
+  <script src="js/app.js?v=20261119c"></script>
+  <script>
+    setTimeout(function () {
+      try {
+        if (window.JarvisApi) {
+          window.JarvisApi.rpc("client_error", {
+            kind: "inline-probe",
+            message: "bridge=yes app=" + typeof window.JarvisApi
+          });
+        }
+      } catch (error) {
+        if (document.body) {
+          document.body.setAttribute("data-probe-error", String(error));
+        }
+      }
+    }, 1500);
+  </script>
+</body>
+</html>

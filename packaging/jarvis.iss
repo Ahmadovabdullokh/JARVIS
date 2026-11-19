@@ -28,7 +28,7 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Name: "startup"; Description: "Запускать JARVIS при входе в Windows"; GroupDescription: "Автозапуск:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\JARVIS.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\config\config.example.json"; DestDir: "{app}\config"; DestName: "config.json"; Flags: onlyifdoesntexist
 
 [Icons]

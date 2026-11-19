@@ -1,0 +1,110 @@
+.context-status-main span.status-ready,
+.reactor-caption strong.status-ready {
+  color: var(--success);
+}
+
+.context-status-main span.status-listening,
+.context-status-main span.status-speaking,
+.reactor-caption strong.status-listening,
+.reactor-caption strong.status-speaking {
+  color: var(--accent);
+}
+
+.context-status-main span.status-thinking,
+.context-status-main span.status-processing,
+.reactor-caption strong.status-thinking,
+.reactor-caption strong.status-processing {
+  color: var(--violet);
+}
+
+.context-status-main span.status-error,
+.reactor-caption strong.status-error {
+  color: var(--error);
+}
+
+.context-status-main span.status-starting,
+.reactor-caption strong.status-starting {
+  color: var(--accent-soft);
+}
+
+.context-status-main span.status-stopped,
+.reactor-caption strong.status-stopped {
+  color: var(--muted);
+}
+
+.context-ring span.status-ready {
+  background: var(--success);
+  box-shadow: 0 0 14px var(--success);
+}
+
+.context-ring span.status-listening,
+.context-ring span.status-speaking {
+  background: var(--accent);
+  box-shadow: 0 0 14px var(--accent);
+}
+
+.context-ring span.status-thinking,
+.context-ring span.status-processing {
+  background: var(--violet);
+  box-shadow: 0 0 14px var(--violet);
+}
+
+.context-ring span.status-error {
+  background: var(--error);
+  box-shadow: 0 0 14px var(--error);
+}
+
+.context-ring span.status-stopped {
+  background: var(--dim);
+  box-shadow: none;
+}
+
+.journal-line {
+  display: block;
+}
+
+.journal-line.log-error {
+  color: #ff9d9d;
+}
+
+.journal-line.log-tool {
+  color: #cdb6ff;
+}
+
+.journal-line.log-answer {
+  color: #8af7c7;
+}
+
+.journal-line.log-system {
+  color: var(--muted);
+}
+
+.journal-line.log-iteration {
+  color: var(--accent-soft);
+}
+
+.command-empty,
+.tasks-empty-inline {
+  padding: 18px;
+  color: var(--dim);
+  text-align: center;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.task-result {
+  margin-top: 4px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.statusbar .connection-ok {
+  color: var(--success);
+}
+
+.statusbar .connection-bad {
+  color: var(--error);
+}
