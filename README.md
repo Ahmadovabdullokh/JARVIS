@@ -21,8 +21,8 @@
   office, communication, dev, code, security, productivity, knowledge,
   hardware, memory, automation, agent, generic. Внутри `knowledge` — RAG,
   внутри `agent` — undo, аудит и диагностика.
-- Плюс 40 legacy-инструментов (40 уникальных имён; всего 444 доступных
-  вызова).
+- Плюс 40 legacy-инструментов (40 уникальных имён; всего 448 доступных
+  вызовов).
 - Универсальный доступ: `run_powershell`, `run_cmd`, `run_python`,
   `run_executable`, `http_request`, `batch_run`, `workflow_run`.
 - Режимы чата (вкладка ЧАТ): «Просто чат» — беседа без действий,
@@ -60,13 +60,16 @@
   до 12 секунд, пауза 0.7 c, STT-подсказка с ключевыми терминами;
   режим «показать команду перед отправкой» в конфиге (`transcript_preview`)
   и на вкладке НАСТРОЙКИ.
-- Интерфейс: по умолчанию новый HUD на WebView2 (HTML/CSS/JS) —
-  frameless-окно, арк-реактор на Canvas с анимацией 60 fps, мягкое
-  свечение, телеметрия, чат, разделы ЧАТ, АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ
-  и НАСТРОЙКИ, поиск команд (`Ctrl+K`), tray-иконка и быстрые действия.
+- Интерфейс: по умолчанию новый HUD на WebView2 через `pywebview`
+  (EdgeChromium-бэкенд) — frameless-окно, арк-реактор на Canvas с
+  анимацией 60 fps, HUD-стилизация, телеметрия, чат, разделы ЧАТ,
+  АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ и НАСТРОЙКИ, поиск команд (`Ctrl+K`),
+  tray-иконка и быстрые действия.
   Старый Tkinter HUD сохранён как fallback: `scripts\start.ps1 -Tk`.
   WebView2 уже есть в Windows 11; на Windows 10 может потребоваться
-  Evergreen WebView2 Runtime. Pythonnet и .NET для нового UI не нужны.
+  Evergreen WebView2 Runtime. Для моста используется `pywebview` +
+  `pythonnet` (CoreCLR); `launcher_web.py` генерирует
+  `data/dotnet.runtimeconfig.json` под установленный .NET.
 
 Локальные модели не обязательны, но можно подключить Ollama. Папку
 `models/vosk-model-small-ru-0.22` можно удалить: Vosk больше не
@@ -74,12 +77,12 @@
 
 ## Новый интерфейс
 
-Новый HUD использует нативный WebView2 (пакет `webview2`, Win32) и
-локальные HTML/CSS/JS-ассеты из `ui/`. Python-слой общается с ним через
-`app/ui_bridge.py`: `bootstrap`, `poll`, `send_message`, `stop`,
-`cancel_task`, `save_settings`, `get_journal`, `run_doctor` и
-`window_action`. Ответы приходят пакетом, поэтому UI не зависит от
-медленных операций агента.
+Новый HUD использует нативный WebView2 через `pywebview` (бэкенд
+EdgeChromium, JS↔Python — единый метод `rpc()` в `JarvisBridgeApi`,
+`app/ui_bridge.py`) и локальные HTML/CSS/JS-ассеты из `ui/`. Методы:
+`bootstrap`, `poll`, `send_message`, `stop`, `cancel_task`,
+`save_settings`, `get_journal`, `run_doctor` и `window_action`. Ответы
+приходят пакетом, поэтому UI не зависит от медленных операций агента.
 
 Запуск:
 
@@ -90,7 +93,11 @@ scripts\start.ps1 -Tk    # старый Tkinter HUD
 
 Если WebView2 Runtime недоступен, `launcher_web.py` автоматически
 переключается на Tkinter. Сборка EXE: `scripts\build.ps1`; в
-`jarvis.spec` уже включены `ui/` и DLL WebView2.
+`jarvis.spec` уже включены `ui/`, `pywebview`, `pythonnet` и
+`clr_loader`. Для pythonnet при первом запуске создаётся
+`data/dotnet.runtimeconfig.json` (CoreCLR, .NET 10); на .NET 10 в
+`.venv` может потребоваться точечный патч
+`webview/platforms/winforms.py` — см. `AGENTS.md`.
 
 ## Расширенные возможности
 
@@ -125,7 +132,7 @@ JARVIS умеет не только открывать приложения и �
 - искать текст на экране через OCR и кликать по нему
   (`screen_click_text`).
 
-Модель не получает все 404 схемы сразу: `get_llm_tools()` выбирает
+Модель не получает все 448 схемы сразу: `get_llm_tools()` выбирает
 релевантные запросу инструменты и всегда добавляет универсальные
 `run_powershell` / `run_cmd` / `run_python` / `http_request` и
 мета-инструменты `list_capabilities` / `describe_capability` /
