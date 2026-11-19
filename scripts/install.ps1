@@ -14,6 +14,13 @@ if (-not (Test-Path -LiteralPath ".venv")) {
 }
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
+$Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+
+foreach ($Exe in @($Python, $Pythonw)) {
+    if (Test-Path -LiteralPath $Exe) {
+        & icacls $Exe /setintegritylevel Medium *> $null
+    }
+}
 
 & $Python -m pip install --upgrade pip
 & $Python -m pip install -r requirements.txt

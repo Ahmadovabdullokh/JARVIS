@@ -1,10 +1,10 @@
 import time
 import urllib.parse
-import webbrowser
 
 import pyautogui
 import requests
 
+from app.tools.common import open_url as open_in_browser
 from app.tools.common import optional_import, resolve_path
 
 SEARCH_ENGINES = {
@@ -16,7 +16,8 @@ SEARCH_ENGINES = {
 
 
 def _open(url):
-    webbrowser.open(str(url), new=2)
+    if not open_in_browser(str(url)):
+        return f"Не удалось открыть: {url}"
     return f"Открыто в браузере: {url}"
 
 

@@ -7,7 +7,6 @@ import subprocess
 import threading
 import time
 import urllib.parse
-import webbrowser
 from pathlib import Path
 
 import psutil
@@ -22,11 +21,59 @@ from app.observability import tracer
 from app.safety import SafetyManager
 from app.tasks import TaskManager
 from app.tools import load_report, register_all_tools
+from app.tools.apps import launch_by_name, launch_store_app
 from app.tools.base import ToolContext, ToolRegistry, ToolSpec
+from app.tools.common import open_url
 
 log = get_logger(__name__)
 
 MAX_LLM_TOOLS = 128
+
+SITE_ALIASES = {
+    "google": "https://www.google.com",
+    "гугл": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "джимейл": "https://mail.google.com",
+    "yandex": "https://ya.ru",
+    "яндекс": "https://ya.ru",
+    "вк": "https://vk.com",
+    "вконтакте": "https://vk.com",
+    "vk": "https://vk.com",
+    "одноклассники": "https://ok.ru",
+    "ok": "https://ok.ru",
+    "github": "https://github.com",
+    "гитхаб": "https://github.com",
+    "chatgpt": "https://chatgpt.com",
+    "чатгпт": "https://chatgpt.com",
+    "ютуб": "https://www.youtube.com",
+    "youtube": "https://www.youtube.com",
+    "rutube": "https://rutube.ru",
+    "рутуб": "https://rutube.ru",
+    "twitch": "https://www.twitch.tv",
+    "твич": "https://www.twitch.tv",
+    "instagram": "https://www.instagram.com",
+    "инстаграм": "https://www.instagram.com",
+    "facebook": "https://www.facebook.com",
+    "фейсбук": "https://www.facebook.com",
+    "tiktok": "https://www.tiktok.com",
+    "тикток": "https://www.tiktok.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "ватсап": "https://web.whatsapp.com",
+    "telegram web": "https://web.telegram.org",
+    "телеграм веб": "https://web.telegram.org",
+    "wikipedia": "https://ru.wikipedia.org",
+    "википедия": "https://ru.wikipedia.org",
+    "avito": "https://www.avito.ru",
+    "авито": "https://www.avito.ru",
+    "ozon": "https://www.ozon.ru",
+    "озон": "https://www.ozon.ru",
+    "wildberries": "https://www.wildberries.ru",
+    "вайлдберриз": "https://www.wildberries.ru",
+    "кинопоиск": "https://www.kinopoisk.ru",
+    "steam": "https://store.steampowered.com",
+    "стим": "https://store.steampowered.com",
+    "карты": "https://maps.google.com",
+}
 
 LEGACY_TOOL_CATEGORIES = {
     "minimize_all": "windows",
@@ -699,24 +746,53 @@ class PCAgent:
     def open_app(self, app_name):
         app_name = app_name.lower().strip()
 
+        if app_name in {"telegram", "телеграм", "телеграмм"}:
+            try:
+                result = launch_store_app("Telegram")
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                log.info(
+                    f"[APP] Не удалось найти Telegram в меню Пуск: {error}"
+                )
+                result = None
+            if result:
+                return "Открыл Telegram."
+
+            try:
+                os.startfile("tg://")
+                return "Открыл Telegram."
+            except OSError as error:
+                return (
+                    "Не удалось открыть Telegram: приложение не найдено "
+                    f"или не зарегистрирован протокол tg:// ({error})."
+                )
+
+        if app_name in {"browser", "браузер"}:
+            return self.open_browser()
+
         apps = {
-            "notepad": ["notepad.exe"],
-            "блокнот": ["notepad.exe"],
+            "notepad": "notepad",
+            "блокнот": "notepad",
 
-            "calculator": ["calc.exe"],
-            "калькулятор": ["calc.exe"],
+            "calculator": "calc",
+            "калькулятор": "calc",
 
-            "telegram": ["tg://"],
-            "телеграм": ["tg://"],
+            "discord": "discord",
+            "дискорд": "discord",
 
-            "discord": ["discord://"],
-            "дискорд": ["discord://"],
+            "chrome": "chrome",
+            "хром": "chrome",
+            "гугл хром": "chrome",
+            "edge": "msedge",
+            "microsoft edge": "msedge",
+            "firefox": "firefox",
+            "яндекс": "яндекс",
+            "яндекс браузер": "яндекс",
 
-            "explorer": ["explorer.exe"],
-            "проводник": ["explorer.exe"],
+            "explorer": "explorer",
+            "проводник": "explorer",
 
-            "task manager": ["taskmgr.exe"],
-            "диспетчер задач": ["taskmgr.exe"],
+            "task manager": "taskmgr",
+            "диспетчер задач": "taskmgr",
         }
 
         if app_name not in apps:
@@ -725,23 +801,10 @@ class PCAgent:
                 f"«{app_name}»."
             )
 
-        command = apps[app_name]
-
         try:
-
-            if command[0].endswith("://"):
-                os.startfile(command[0])
-
-            else:
-                subprocess.Popen(command)
-
-            return f"Открыл {app_name}."
-
-        except Exception as e:
-            return (
-                f"Не удалось открыть "
-                f"{app_name}: {e}"
-            )
+            return launch_by_name(apps[app_name])
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            return f"Не удалось открыть {app_name}: {error}"
 
     def close_app(self, app_name):
         app_name = app_name.lower().strip()
@@ -1004,7 +1067,7 @@ class PCAgent:
             + urllib.parse.quote_plus(query)
         )
 
-        webbrowser.open(url)
+        open_url(url)
 
         return f"Ищу в интернете: {query}"
 
@@ -1022,7 +1085,7 @@ class PCAgent:
             + urllib.parse.quote_plus(query)
         )
 
-        webbrowser.open(url)
+        open_url(url)
 
         if city:
             return f"Ищу погоду в городе {city}."
@@ -1033,11 +1096,44 @@ class PCAgent:
     # YOUTUBE
     # =========================================================
 
-    def open_youtube(self):
-        webbrowser.open(
-            "https://www.youtube.com"
-        )
+    def open_browser(self):
+        try:
+            if not open_url("https://www.google.com"):
+                return "Не удалось открыть браузер по умолчанию."
+        except OSError as error:
+            return f"Не удалось открыть браузер: {error}"
+        return "Открыл браузер."
 
+    def open_website(self, name):
+        target = str(name or "").strip().lower()
+        if not target:
+            return None
+
+        url = SITE_ALIASES.get(target)
+        if url is None:
+            if target.startswith(("http://", "https://")):
+                url = target
+            elif re.fullmatch(
+                r"[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?",
+                target,
+            ):
+                url = "https://" + target
+            else:
+                return None
+
+        try:
+            if not open_url(url, window_titles=[target]):
+                return f"Не удалось открыть сайт: {url}"
+        except OSError as error:
+            return f"Не удалось открыть сайт: {error}"
+        return f"Открыл сайт: {url}"
+
+    def open_youtube(self):
+        try:
+            if not open_url("https://www.youtube.com"):
+                return "Не удалось открыть YouTube в браузере."
+        except OSError as error:
+            return f"Не удалось открыть YouTube: {error}"
         return "Открыл YouTube."
 
     def youtube_search(self, query):
@@ -1057,7 +1153,7 @@ class PCAgent:
             + urllib.parse.quote_plus(query)
         )
 
-        webbrowser.open(url)
+        open_url(url)
 
         return (
             f"Ищу на YouTube: {query}"
@@ -1135,7 +1231,7 @@ class PCAgent:
                     "ссылку на видео."
                 )
 
-            webbrowser.open(video_url)
+            open_url(video_url)
 
             title = video.get(
                 "title",
@@ -1917,7 +2013,12 @@ class PCAgent:
         # YOUTUBE OPEN
         # =====================================================
 
-        if (
+        if re.fullmatch(
+            r"(?:открой|открыть|откройте|запусти|запустить|"
+            r"включи|включить|open|start|launch)\s+(?:мне\s+)?"
+            r"(?:ютуб|ютюб|youtube)(?:\s+пожалуйста)?",
+            text,
+        ) or (
             "включи видео с ютуба" in text
             or "включи видео с ютуб" in text
             or "открой видео с ютуба" in text
@@ -2160,37 +2261,65 @@ class PCAgent:
         # =====================================================
 
         app_open = {
-
-            "открой блокнот": "notepad",
-            "запусти блокнот": "notepad",
-
-            "открой калькулятор": "calculator",
-            "запусти калькулятор": "calculator",
-
-            "открой телеграм": "telegram",
-            "запусти телеграм": "telegram",
-
-            "открой telegram": "telegram",
-            "запусти telegram": "telegram",
-
-            "открой дискорд": "discord",
-            "запусти дискорд": "discord",
-
-            "открой discord": "discord",
-            "запусти discord": "discord",
-
-            "открой проводник": "explorer",
-            "запусти проводник": "explorer",
-
-            "открой диспетчер задач": "task manager",
-            "запусти диспетчер задач": "task manager",
+            "блокнот": "notepad",
+            "notepad": "notepad",
+            "калькулятор": "calculator",
+            "calculator": "calculator",
+            "телеграм": "telegram",
+            "телеграмм": "telegram",
+            "telegram": "telegram",
+            "дискорд": "discord",
+            "discord": "discord",
+            "проводник": "explorer",
+            "explorer": "explorer",
+            "диспетчер задач": "task manager",
+            "task manager": "task manager",
+            "браузер": "browser",
+            "browser": "browser",
+            "хром": "chrome",
+            "chrome": "chrome",
+            "гугл хром": "chrome",
+            "edge": "edge",
+            "microsoft edge": "microsoft edge",
+            "firefox": "firefox",
+            "яндекс": "яндекс",
+            "яндекс браузер": "яндекс браузер",
         }
 
-        if text in app_open:
+        app_open_match = re.fullmatch(
+            r"(?:открой|открыть|откройте|запусти|запустить|"
+            r"включи|включить|open|start|launch)\s+(.+)",
+            text,
+        )
+        if app_open_match:
+            target = app_open_match.group(1).strip()
+            target = re.sub(r"^(?:мне\s+)?", "", target)
+            target = re.sub(r"\s+пожалуйста$", "", target)
+            app_name = app_open.get(target)
+            if app_name:
+                return self.open_app(app_name)
 
-            return self.open_app(
-                app_open[text]
+        # =====================================================
+        # OPEN WEBSITES
+        # =====================================================
+
+        website_match = re.fullmatch(
+            r"(?:открой|открыть|откройте|запусти|запустить|"
+            r"перейди(?:\s+на)?|зайди(?:\s+на)?|open|visit)\s+(.+)",
+            text,
+        )
+        if website_match:
+            target = website_match.group(1).strip()
+            target = re.sub(r"^(?:мне\s+)?", "", target)
+            target = re.sub(
+                r"^(?:сайт|страниц[уа]|вкладку|ссылку)\s+",
+                "",
+                target,
             )
+            target = re.sub(r"\s+пожалуйста$", "", target)
+            website = self.open_website(target)
+            if website:
+                return website
 
         # =====================================================
         # CLOSE APPS

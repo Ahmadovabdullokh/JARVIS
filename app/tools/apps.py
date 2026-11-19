@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from app.tools.common import (
+    activate_window,
     powershell,
     ps_quote,
     resolve_path,
@@ -39,6 +40,14 @@ ALIASES = {
     "телеграм": "tg://",
     "discord": "discord://",
     "дискорд": "discord://",
+    "chrome": "chrome.exe",
+    "хром": "chrome.exe",
+    "гугл хром": "chrome.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
+    "firefox": "firefox.exe",
+    "яндекс": "browser.exe",
+    "яндекс браузер": "browser.exe",
 }
 
 
@@ -94,6 +103,10 @@ def _find_app_path(name):
 
 def _launch(path, args=None, admin=False, wait=False, cwd=None):
     args = [str(item) for item in (args or [])]
+    suffix = Path(str(path)).suffix.lower()
+    if not args and not admin and not wait and suffix in {".lnk", ".url"}:
+        os.startfile(str(path))
+        return f"Запущено: {path}"
     if admin:
         import ctypes
 
@@ -125,6 +138,196 @@ def _launch(path, args=None, admin=False, wait=False, cwd=None):
     return f"Запущено: {path} (PID {process.pid})"
 
 
+_APPX_EXE_CACHE = {}
+
+
+def _appx_executable(name, timeout=30):
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    if key in _APPX_EXE_CACHE:
+        return _APPX_EXE_CACHE[key]
+
+    pattern = "*" + str(name).strip() + "*"
+    script = (
+        "$pkg = Get-AppxPackage | Where-Object { $_.Name -like "
+        f"{ps_quote(pattern)} }} | Select-Object -First 1; "
+        "if (-not $pkg) { exit 0 }; "
+        "$manifest = $pkg | Get-AppxPackageManifest; "
+        "$exe = $manifest.Package.Applications.Application | "
+        "ForEach-Object { $_.Executable } | "
+        "Where-Object { $_ } | Select-Object -First 1; "
+        "if ($exe) { Join-Path $pkg.InstallLocation $exe }"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=max(5, int(timeout or 30)),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        candidate = line.strip()
+        if candidate and os.path.exists(candidate):
+            _APPX_EXE_CACHE[key] = candidate
+            return candidate
+    return None
+
+
+def launch_store_app(name, timeout=30):
+    exe = _appx_executable(name, timeout=timeout)
+    if exe:
+        try:
+            os.startfile(exe)
+            activate_window(
+                [name],
+                timeout=4.0,
+                process_names=[name],
+            )
+            return f"Запущено: {exe}"
+        except OSError:
+            pass
+
+    pattern = "*" + str(name or "").strip() + "*"
+    if pattern == "**":
+        return None
+    script = (
+        "$app = Get-StartApps | "
+        f"Where-Object {{ $_.Name -like {ps_quote(pattern)} }} | "
+        "Select-Object -First 1 -ExpandProperty AppID; "
+        "if ($app) { $app }"
+    )
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=max(5, int(timeout or 30)),
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            "Не удалось найти приложение в меню Пуск."
+            + (f" {detail[:300]}" if detail else "")
+        )
+    app_id = (result.stdout or "").strip()
+    if not app_id:
+        return None
+    try:
+        os.startfile(f"shell:AppsFolder\\{app_id}")
+    except OSError:
+        result = _launch(
+            "explorer.exe",
+            [f"shell:AppsFolder\\{app_id}"],
+        )
+        activate_window(
+            [name],
+            timeout=4.0,
+            process_names=[name],
+        )
+        return result
+    activate_window(
+        [name],
+        timeout=4.0,
+        process_names=[name],
+    )
+    return f"Запущено: {app_id}"
+
+
+def launch_by_name(name, args=None, admin=False, wait=False, cwd=None):
+    name = str(name or "").strip()
+    if not name:
+        return "Не указано приложение."
+
+    candidate = Path(os.path.expandvars(os.path.expanduser(name)))
+    if candidate.exists():
+        return _launch(candidate, args, admin, wait, cwd)
+
+    alias = ALIASES.get(name.lower())
+
+    if alias == "tg://":
+        try:
+            store_result = launch_store_app("Telegram")
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            store_result = None
+        if store_result:
+            return store_result
+
+    if alias and ("://" in alias or alias.endswith(":")):
+        try:
+            os.startfile(alias)
+        except OSError as error:
+            return f"Не удалось открыть {alias}: {error}"
+        return f"Открыто: {alias}"
+
+    target = alias or name
+
+    shortcut = (
+        _find_shortcut(target)
+        or _find_shortcut(Path(target).stem)
+        or _find_shortcut(name)
+        or _find_shortcut(Path(name).stem)
+    )
+    if shortcut:
+        return _launch(shortcut, args, admin, wait, cwd)
+
+    app_path = _find_app_path(target)
+    if app_path:
+        return _launch(app_path, args, admin, wait, cwd)
+
+    found = shutil.which(target)
+    if found:
+        return _launch(found, args, admin, wait, cwd)
+
+    if target.lower().endswith(".exe"):
+        try:
+            os.startfile(target)
+            return f"Запущено: {target}"
+        except OSError:
+            pass
+
+    if "://" in name or name.startswith("ms-"):
+        try:
+            os.startfile(name)
+        except OSError as error:
+            return f"Не удалось открыть {name}: {error}"
+        return f"Открыт протокол: {name}"
+
+    result = run_command(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"Start-Process -FilePath {ps_quote(name)}",
+        ],
+        timeout=30,
+    )
+    if result.get("ok"):
+        return f"Запущено через PowerShell: {name}"
+    return (
+        f"Приложение «{name}» не найдено. "
+        "Можно указать полный путь."
+    )
+
+
 def register(registry):
 
     @registry.tool(
@@ -145,51 +348,12 @@ def register(registry):
         danger="confirm",
     )
     def app_launch(name, args=None, admin=False, wait=False, cwd=None):
-        name = str(name or "").strip()
-        if not name:
-            return "Не указано приложение."
-
-        candidate = Path(os.path.expandvars(os.path.expanduser(name)))
-        if candidate.exists():
-            return _launch(candidate, args, admin, wait, cwd)
-
-        alias = ALIASES.get(name.lower())
-        if alias:
-            if alias.endswith(":"):
-                os.startfile(alias)
-                return f"Открыто: {alias}"
-            return _launch(alias, args, admin, wait, cwd)
-
-        shortcut = _find_shortcut(name)
-        if shortcut:
-            return _launch(shortcut, args, admin, wait, cwd)
-
-        app_path = _find_app_path(name)
-        if app_path:
-            return _launch(app_path, args, admin, wait, cwd)
-
-        found = shutil.which(name)
-        if found:
-            return _launch(found, args, admin, wait, cwd)
-
-        if "://" in name or name.startswith("ms-"):
-            os.startfile(name)
-            return f"Открыт протокол: {name}"
-
-        result = run_command(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                f"Start-Process -FilePath {ps_quote(name)}",
-            ],
-            timeout=30,
-        )
-        if result.get("ok"):
-            return f"Запущено через PowerShell: {name}"
-        return (
-            f"Приложение «{name}» не найдено. "
-            "Можно указать полный путь."
+        return launch_by_name(
+            name,
+            args=args,
+            admin=admin,
+            wait=wait,
+            cwd=cwd,
         )
 
     @registry.tool(

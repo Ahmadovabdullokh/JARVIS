@@ -11,6 +11,9 @@ from app.tools.common import (
     resolve_path,
     run_command,
 )
+from app.tools.common import (
+    open_url as open_in_browser,
+)
 
 
 def _decode(data):
@@ -257,9 +260,8 @@ def register(registry):
         category="generic",
     )
     def open_url(url):
-        import webbrowser
-
-        webbrowser.open(str(url), new=2)
+        if not open_in_browser(str(url)):
+            return f"Не удалось открыть: {url}"
         return f"Открыто: {url}"
 
     @registry.tool(

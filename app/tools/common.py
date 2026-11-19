@@ -1,10 +1,13 @@
 import importlib
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 from app.paths import BASE_DIR  # noqa: F401  (re-export для инструментов)
@@ -177,6 +180,269 @@ def is_admin():
 def open_path(path):
     os.startfile(str(path))
     return f"Открыл: {path}"
+
+
+def _command_executable(command):
+    text = str(command or "").strip()
+    if not text:
+        return None
+    match = re.match(r'^\s*"([^"]+)"', text)
+    candidate = match.group(1) if match else text.split()[0]
+    candidate = os.path.expandvars(candidate)
+    if os.path.exists(candidate):
+        return candidate
+    return None
+
+
+def _browser_executables():
+    commands = []
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+
+    if winreg is not None:
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations"
+                r"\UrlAssociations\https\UserChoice",
+            ) as key:
+                prog_id = str(winreg.QueryValueEx(key, "ProgId")[0])
+        except OSError:
+            prog_id = ""
+
+        if prog_id:
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CLASSES_ROOT,
+                    f"{prog_id}\\shell\\open\\command",
+                ) as key:
+                    commands.append(winreg.QueryValueEx(key, "")[0])
+            except OSError:
+                pass
+
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(
+                    root,
+                    r"SOFTWARE\Clients\StartMenuInternet",
+                ) as base:
+                    count = winreg.QueryInfoKey(base)[0]
+                    for index in range(count):
+                        try:
+                            client = winreg.EnumKey(base, index)
+                            with winreg.OpenKey(
+                                base,
+                                f"{client}\\shell\\open\\command",
+                            ) as key:
+                                commands.append(
+                                    winreg.QueryValueEx(key, "")[0]
+                                )
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+
+    executables = []
+    for command in commands:
+        exe = _command_executable(command)
+        if exe and exe not in executables:
+            executables.append(exe)
+
+    for name in (
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "opera.exe",
+        "brave.exe",
+        "browser.exe",
+    ):
+        found = shutil.which(name)
+        if found and found not in executables:
+            executables.append(found)
+
+    for path in (
+        r"%ProgramFiles%\Yandex\YandexBrowser\Application\browser.exe",
+        r"%ProgramFiles(x86)%\Yandex\YandexBrowser\Application\browser.exe",
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+        r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+        r"%ProgramFiles%\Mozilla Firefox\firefox.exe",
+        r"%LocalAppData%\Programs\Opera\opera.exe",
+        r"%ProgramFiles%\Opera\opera.exe",
+    ):
+        expanded = os.path.expandvars(path)
+        if os.path.exists(expanded) and expanded not in executables:
+            executables.append(expanded)
+
+    return executables
+
+
+def activate_window(
+    title_hints,
+    timeout=5.0,
+    interval=0.15,
+    process_names=None,
+):
+    hints = [
+        str(hint).strip().lower()
+        for hint in (title_hints or [])
+        if str(hint).strip()
+    ]
+    names = {
+        str(name).strip().lower().removesuffix(".exe")
+        for name in (process_names or [])
+        if str(name).strip()
+    }
+    if not hints and not names:
+        return False
+
+    win32gui = optional_import("win32gui")
+    win32con = optional_import("win32con")
+    if win32gui is None or win32con is None:
+        return False
+    win32process = optional_import("win32process")
+    psutil = optional_import("psutil")
+
+    def _process_name(hwnd):
+        if win32process is None or psutil is None:
+            return ""
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            name = psutil.Process(pid).name().lower()
+            return name.removesuffix(".exe")
+        except Exception:
+            return ""
+
+    def _scan(predicate):
+        visible = []
+        hidden = []
+
+        def _collect(hwnd, _extra):
+            try:
+                title = win32gui.GetWindowText(hwnd) or ""
+                if not title:
+                    return True
+                if not predicate(hwnd, title):
+                    return True
+                if win32gui.IsWindowVisible(hwnd):
+                    visible.append(hwnd)
+                else:
+                    hidden.append(hwnd)
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumWindows(_collect, None)
+        except Exception:
+            return []
+        return visible or hidden
+
+    deadline = time.time() + max(0.0, float(timeout))
+    while True:
+        matched = []
+        if names:
+            matched = _scan(
+                lambda hwnd, _title: _process_name(hwnd) in names
+            )
+        if not matched and hints:
+            matched = _scan(
+                lambda _hwnd, title: any(
+                    hint in title.lower() for hint in hints
+                )
+            )
+
+        if matched:
+            hwnd = matched[0]
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.BringWindowToTop(hwnd)
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                except Exception:
+                    flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                    win32gui.SetWindowPos(
+                        hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags
+                    )
+                    win32gui.SetWindowPos(
+                        hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags
+                    )
+            except Exception:
+                return False
+            return True
+
+        if time.time() >= deadline:
+            return False
+        time.sleep(max(0.05, float(interval)))
+
+
+def _url_window_hints(url):
+    try:
+        parsed = urllib.parse.urlparse(
+            url if "://" in url else "https://" + str(url)
+        )
+    except ValueError:
+        return []
+    host = (parsed.hostname or "").lower().strip(".")
+    if not host:
+        return []
+    parts = [part for part in host.split(".") if part]
+    if len(parts) >= 3 and parts[0] in {"www", "m", "mobile"}:
+        parts = parts[1:]
+    if len(parts) < 2:
+        return []
+    label = parts[-2]
+    if label in {"co", "com", "org", "net", "gov", "edu", "ac"}:
+        label = parts[-3] if len(parts) >= 3 else label
+    return [label] if len(label) >= 4 else []
+
+
+def open_url(url, window_titles=None, focus_timeout=3.0):
+    text = str(url or "").strip()
+    if not text:
+        return False
+    if "://" not in text and not text.startswith(
+        ("about:", "mailto:", "tel:", "file:")
+    ):
+        text = "https://" + text
+
+    hints = []
+    for hint in list(window_titles or []) + _url_window_hints(text):
+        value = str(hint or "").strip()
+        if value and value not in hints:
+            hints.append(value)
+
+    for exe in _browser_executables():
+        try:
+            subprocess.Popen([exe, text], close_fds=True)
+        except OSError:
+            continue
+        if hints:
+            activate_window(hints, timeout=focus_timeout)
+        return True
+
+    try:
+        subprocess.Popen(["explorer.exe", text])
+        if hints:
+            activate_window(hints, timeout=focus_timeout)
+        return True
+    except OSError:
+        pass
+
+    import webbrowser
+
+    try:
+        opened = bool(webbrowser.open(text))
+    except Exception:
+        return False
+    if opened and hints:
+        activate_window(hints, timeout=focus_timeout)
+    return opened
 
 
 def load_json_file(path, default=None):

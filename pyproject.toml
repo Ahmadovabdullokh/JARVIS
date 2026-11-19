@@ -37,3 +37,16 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 files = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".venv",
+    ".git",
+    "data",
+    "models",
+    "build",
+    "dist",
+    "dist_installer",
+]
+addopts = "--import-mode=importlib"
