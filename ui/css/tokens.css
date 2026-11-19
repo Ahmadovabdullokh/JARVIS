@@ -11,9 +11,11 @@
   --text: #e8f1fb;
   --muted: #7b93ad;
   --dim: #3d5570;
-  --accent: #2ee6ff;
-  --accent-soft: #8bf3ff;
+  --accent: #35e0ff;
+  --accent-soft: #9df4ff;
   --accent-dark: #0e7490;
+  --gold: #ffcf7d;
+  --gold-soft: #ffe9c4;
   --violet: #b18cff;
   --violet-dark: #6d28d9;
   --error: #ff6b6b;
@@ -24,6 +26,7 @@
   --error-bg: #2a0f14;
   --glass: rgba(11, 22, 38, 0.78);
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+  --glow: 0 0 24px rgba(46, 230, 255, 0.12);
   --radius: 16px;
   --radius-sm: 10px;
   --font: "Segoe UI", "Inter", sans-serif;
