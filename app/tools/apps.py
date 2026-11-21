@@ -138,6 +138,23 @@ def _launch(path, args=None, admin=False, wait=False, cwd=None):
     return f"Запущено: {path} (PID {process.pid})"
 
 
+def _launch_uninstaller(command):
+    """Запускает UninstallString без интерпретации cmd.exe.
+
+    ``shell=True`` позволял внедрение через метасимволы (&, |, >) в
+    реестровом значении. CreateProcess сам разбирает строку с
+    кавычками; для .bat/.cmd нужен явный cmd.exe.
+    """
+
+    text = str(command or "").strip()
+    if not text:
+        return None
+    head = text.split()[0].strip('"').lower()
+    if head.endswith((".bat", ".cmd")):
+        return subprocess.Popen(["cmd.exe", "/c", text])
+    return subprocess.Popen(text)
+
+
 _APPX_EXE_CACHE = {}
 
 
@@ -434,7 +451,8 @@ def register(registry):
                                 command = winreg.QueryValueEx(
                                     sub, "UninstallString"
                                 )[0]
-                                subprocess.Popen(command, shell=True)
+                                if _launch_uninstaller(command) is None:
+                                    return "Команда удаления пуста."
                                 return f"Запущен деинсталлятор: {display}"
                         except OSError:
                             continue

@@ -20,6 +20,25 @@ def optional_import(module_name):
         return None
 
 
+# Секреты JARVIS, которые не должны попадать в окружение дочерних
+# процессов, запускаемых инструментами (code_run, run_powershell и т.п.).
+SECRET_ENV_NAMES = {
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "JARVIS_REMOTE_TOKEN",
+    "JARVIS_TELEGRAM_BOT_TOKEN",
+    "JARVIS_TELEGRAM_CHAT_ID",
+}
+
+
+def strip_secret_env(env):
+    return {
+        key: value
+        for key, value in env.items()
+        if key.upper() not in SECRET_ENV_NAMES
+    }
+
+
 def resolve_path(path, base=None, must_exist=False):
     text = str(path or "").strip().strip('"').strip("'")
     if not text:
@@ -64,6 +83,7 @@ def run_command(
 ):
     if isinstance(args, str) and not shell:
         args = shlex.split(args, posix=False)
+    child_env = strip_secret_env(os.environ) if env is None else env
     started = time.time()
     try:
         result = subprocess.run(
@@ -74,7 +94,7 @@ def run_command(
             text=True,
             timeout=timeout,
             shell=shell,
-            env=env,
+            env=child_env,
             encoding="utf-8",
             errors="replace",
         )
