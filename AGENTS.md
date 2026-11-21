@@ -37,11 +37,13 @@ WinForms, из-за чего импорт модуля падал. Патч об
 
 ## Удалённый доступ и мобильный клиент
 
-- `app/remote_server.py`: токен в query/`Authorization: Bearer`/cookie;
-  rate-limit — 10 неудач → бан IP на 120 c; `GET /health` открыт;
+- `app/remote_server.py`: токен обменивается на HttpOnly-cookie через
+  `POST /login` (совместимость: `GET /?token=` один раз редиректит);
+  rate-limit — 10 неудач → бан IP на 120 c, `X-Forwarded-For` только от
+  доверенных прокси (`JARVIS_TRUSTED_PROXIES`); `GET /health` открыт;
   `POST /stt` принимает аудио и гоняет через ffmpeg → `VoiceListener._transcribe`.
-- Политика методов: `remote.read_only` или `remote.allowed_methods`
-  в `config/config.json` (см. `_remote_policy()`).
+- Политика методов: `remote.read_only` (по умолчанию `true`) или
+  `remote.allowed_methods` в `config/config.json` (см. `_remote_policy()`).
 - Туннели: `scripts\start_tunnel_cf.ps1` (cloudflared, quick или named
   tunnel через `remote.tunnel_name`), `scripts\start_tunnel.ps1` — Pinggy.
 - Android: `RemoteService` (foreground, /health-чек), WebView mic permission,

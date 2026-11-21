@@ -16,6 +16,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -28,6 +29,11 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends Activity {
 
@@ -165,13 +171,12 @@ public class MainActivity extends Activity {
         return getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    private String buildUrl(String base, String token) {
+    private String normalizeBase(String base) {
         String url = base.trim();
         while (url.endsWith("/")) {
             url = url.substring(0, url.length() - 1);
         }
-        String sep = url.contains("?") ? "&" : "?";
-        return url + sep + "token=" + token.trim();
+        return url;
     }
 
     private void loadServer() {
@@ -181,8 +186,64 @@ public class MainActivity extends Activity {
             showSettingsDialog();
             return;
         }
-        pendingUrl = buildUrl(url, token);
-        webView.loadUrl(pendingUrl);
+        loginAndLoad(normalizeBase(url), token);
+    }
+
+    private void loginAndLoad(String base, String token) {
+        // Токен больше не уходит в URL: обмениваем его на HttpOnly-cookie
+        // через POST /login и передаём cookie в WebView.
+        pendingUrl = base;
+        CookieManager.getInstance().setAcceptCookie(true);
+        new Thread(() -> {
+            String cookie = login(base, token);
+            runOnUiThread(() -> {
+                if (cookie == null) {
+                    Toast.makeText(this,
+                            "Не удалось войти: проверьте адрес и токен.",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                CookieManager manager = CookieManager.getInstance();
+                manager.setCookie(base, cookie);
+                manager.flush();
+                webView.loadUrl(base);
+            });
+        }, "jarvis-login").start();
+    }
+
+    private String login(String base, String token) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(base + "/login").openConnection();
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            String payload = "{\"token\":\""
+                    + token.replace("\\", "\\\\").replace("\"", "\\\"")
+                    + "\"}";
+            byte[] body = payload.getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(body.length);
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(body);
+            }
+            int code = conn.getResponseCode();
+            if (code != 200 && code != 204) {
+                return null;
+            }
+            String setCookie = conn.getHeaderField("Set-Cookie");
+            if (setCookie == null || setCookie.isEmpty()) {
+                return null;
+            }
+            return setCookie.split(";", 2)[0];
+        } catch (Exception error) {
+            return null;
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
     }
 
     private void showSettingsDialog() {
@@ -219,8 +280,7 @@ public class MainActivity extends Activity {
                             .putString(KEY_URL, url)
                             .putString(KEY_TOKEN, token)
                             .apply();
-                    pendingUrl = buildUrl(url, token);
-                    webView.loadUrl(pendingUrl);
+                    loginAndLoad(normalizeBase(url), token);
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
