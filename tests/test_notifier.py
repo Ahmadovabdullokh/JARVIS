@@ -118,6 +118,48 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(first, "tasks")
         self.assertEqual(second, "errors")
 
+    def test_enable_writes_notifications_section(self):
+        self._write_config({"integrations": {}})
+        with patch.object(
+            notifier, "_save_config", return_value=True
+        ) as save:
+            self.assertTrue(notifier.enable())
+        section = save.call_args.args[0]["notifications"]
+        self.assertTrue(section["telegram"])
+        self.assertTrue(section["tasks"])
+
+    def test_detect_chat_id_saves_found_chat(self):
+        self._write_config({"integrations": {}})
+        response = Mock()
+        response.json.return_value = {
+            "ok": True,
+            "result": [{"message": {"chat": {"id": 777}}}],
+        }
+        with (
+            patch.object(
+                notifier.requests, "get", return_value=response
+            ),
+            patch.object(notifier, "_save_config") as save,
+        ):
+            self.assertEqual(notifier.detect_chat_id("token"), "777")
+        saved = save.call_args.args[0]
+        self.assertEqual(
+            saved["integrations"]["telegram_chat_id"], "777"
+        )
+
+    def test_detect_chat_id_without_updates_returns_empty(self):
+        self._write_config({"integrations": {}})
+        response = Mock()
+        response.json.return_value = {"ok": True, "result": []}
+        with (
+            patch.object(
+                notifier.requests, "get", return_value=response
+            ),
+            patch.object(notifier, "_save_config") as save,
+        ):
+            self.assertEqual(notifier.detect_chat_id("token"), "")
+        save.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

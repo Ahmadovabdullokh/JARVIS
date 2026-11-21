@@ -149,6 +149,24 @@ def _trusted_proxies():
     return proxies
 
 
+def _lan_ip():
+    """Возвращает IPv4-адрес ПК в локальной сети (без реальной отправки)."""
+
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "127.0.0.1"
+    finally:
+        sock.close()
+
+
 def _client_ip(handler):
     peer = handler.client_address[0] if handler.client_address else ""
     forwarded = handler.headers.get("X-Forwarded-For") or ""
@@ -550,7 +568,12 @@ def make_handler(bridge, token, allowed_methods=None):
                 return
 
             method = str(data.get("method", ""))
-            if allowed_methods is not None and method not in allowed_methods:
+            policy = (
+                allowed_methods()
+                if callable(allowed_methods)
+                else allowed_methods
+            )
+            if policy is not None and method not in policy:
                 self._send_json(
                     {"ok": False, "error": "method not allowed"}, 403
                 )
@@ -602,7 +625,7 @@ class RemoteServer:
         self.host = host
         self.port = port
         self.token = get_remote_token()
-        self.allowed_methods = _remote_policy()
+        self.allowed_methods = _remote_policy
         handler = make_handler(bridge, self.token, self.allowed_methods)
         self._server = ThreadingHTTPServer((host, port), handler)
         # Порт 0 означает «любой свободный»: фиксируем фактический.
@@ -611,7 +634,16 @@ class RemoteServer:
 
     @property
     def url(self):
-        return f"http://{self.host}:{self.port}/"
+        host = self.host
+        if host in {"0.0.0.0", "::", ""}:
+            host = "127.0.0.1"
+        return f"http://{host}:{self.port}/"
+
+    @property
+    def lan_url(self):
+        if self.host in {"127.0.0.1", "localhost"}:
+            return ""
+        return f"http://{_lan_ip()}:{self.port}/"
 
     def start(self):
         if self._thread is not None:
@@ -623,6 +655,9 @@ class RemoteServer:
         )
         self._thread.start()
         log.info("[REMOTE] Сервер удалённого доступа: %s", self.url)
+        lan = self.lan_url
+        if lan:
+            log.info("[REMOTE] Для телефона в той же Wi-Fi: %s", lan)
 
     def stop(self):
         try:

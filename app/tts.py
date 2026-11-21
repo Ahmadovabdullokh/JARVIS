@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 import edge_tts
 import imageio_ffmpeg
@@ -16,7 +17,16 @@ log = get_logger(__name__)
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
 # Голоса Edge TTS на случай, если заданный в конфиге недоступен (403).
-FALLBACK_VOICES = ("ru-RU-DmitryNeural", "en-US-GuyNeural")
+# en-US-GuyNeural больше не используется: сервис отдаёт для него
+# NoAudioReceived, из-за чего озвучка молча падала в офлайн-режим.
+FALLBACK_VOICES = (
+    "ru-RU-DmitryNeural",
+    "ru-RU-SvetlanaNeural",
+    "en-US-AndrewMultilingualNeural",
+)
+
+VOICE_ATTEMPTS = 2
+VOICE_RETRY_DELAY = 0.8
 
 
 def _hidden_window_kwargs():
@@ -126,7 +136,7 @@ class TTS:
             log.info(f"[TTS] Не удалось выбрать устройство: {error}")
         return None
 
-    def _play_pcm(self, process):
+    def _play_pcm(self, process, result):
         try:
             with sd.RawOutputStream(
                 samplerate=self.sample_rate,
@@ -147,8 +157,10 @@ class TTS:
                         break
 
                     stream.write(data)
+                    result["bytes"] += len(data)
 
         except Exception as error:
+            result["error"] = error
             log.info(f"[TTS AUDIO ERROR] {error}")
 
     def _spawn_ffmpeg(self):
@@ -198,12 +210,12 @@ class TTS:
     async def _stream_sentence(self, sentence: str, voice: str):
         """Озвучивает одно предложение: edge-tts -> ffmpeg -> PCM."""
 
-        self._stop_event.clear()
         process = self._spawn_ffmpeg()
+        played = {"bytes": 0, "error": None}
 
         player_thread = threading.Thread(
             target=self._play_pcm,
-            args=(process,),
+            args=(process, played),
             daemon=True,
         )
         player_thread.start()
@@ -242,6 +254,13 @@ class TTS:
             except Exception:
                 pass
 
+        if (
+            not self._stop_event.is_set()
+            and played["bytes"] == 0
+            and played["error"] is not None
+        ):
+            raise RuntimeError(f"аудиовыход: {played['error']}")
+
     async def _speak_async(self, text: str, voice: str, progress=None):
         sentences = (
             split_sentences(text) if self.stream_sentences else [text]
@@ -277,6 +296,32 @@ class TTS:
         try:
             engine = pyttsx3.init()
             engine.setProperty("rate", int(self.rate_value or 175))
+            chosen = None
+            for voice in engine.getProperty("voices") or []:
+                identifier = str(getattr(voice, "id", "")).lower()
+                name = str(getattr(voice, "name", "")).lower()
+                languages = " ".join(
+                    str(item)
+                    for item in (getattr(voice, "languages", []) or [])
+                ).lower()
+                if (
+                    "russian" in identifier
+                    or "russian" in name
+                    or languages.startswith("ru")
+                    or "ru_" in languages
+                    or "ru-ru" in languages
+                ):
+                    chosen = voice
+                    break
+            if chosen is not None:
+                engine.setProperty("voice", chosen.id)
+                log.info(
+                    f"[TTS] Офлайн-голос: "
+                    f"{getattr(chosen, 'name', chosen.id)}"
+                )
+            else:
+                log.info("[TTS] Русский офлайн-голос не найден, "
+                         "используется голос по умолчанию.")
             engine.say(text)
             engine.runAndWait()
             log.info("[TTS] Офлайн-синтез выполнен.")
@@ -296,21 +341,32 @@ class TTS:
 
         progress = {"done": 0}
         for voice in self.voices:
-            try:
-                asyncio.run(
-                    self._speak_async(text, voice, progress)
-                )
+            for attempt in range(1, VOICE_ATTEMPTS + 1):
                 if self._stop_event.is_set():
                     log.info("[TTS] Воспроизведение прервано.")
                     return True
-                log.info("[TTS] Готово.")
-                return True
+                try:
+                    self._stop_event.clear()
+                    asyncio.run(
+                        self._speak_async(text, voice, progress)
+                    )
+                    if self._stop_event.is_set():
+                        log.info("[TTS] Воспроизведение прервано.")
+                        return True
+                    log.info("[TTS] Готово.")
+                    return True
 
-            except Exception as error:
-                log.info(
-                    f"[TTS] Edge TTS недоступен для голоса "
-                    f"{voice} ({type(error).__name__}: {error})."
-                )
+                except Exception as error:
+                    if self._stop_event.is_set():
+                        log.info("[TTS] Воспроизведение прервано.")
+                        return True
+                    log.info(
+                        f"[TTS] Edge TTS недоступен для голоса "
+                        f"{voice}, попытка {attempt}/{VOICE_ATTEMPTS} "
+                        f"({type(error).__name__}: {error})."
+                    )
+                    if attempt < VOICE_ATTEMPTS:
+                        time.sleep(VOICE_RETRY_DELAY)
 
         if self.offline_fallback:
             log.info("[TTS] Пробую офлайн-синтез.")

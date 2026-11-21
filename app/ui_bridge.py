@@ -115,6 +115,15 @@ class UiBridge:
                 "error",
                 f"JARVIS не смог запуститься: {error}",
             )
+            try:
+                from app import notifier
+
+                notifier.notify(
+                    f"❌ JARVIS не смог запуститься: {error}",
+                    kind="errors",
+                )
+            except Exception:
+                pass
         finally:
             set_status("stopped")
             publish_ui_event("system", "JARVIS завершил работу.")
@@ -407,7 +416,7 @@ class UiBridge:
         return {"accepted": True}
 
     def stop(self):
-        stop_assistant()
+        stop_assistant(emergency=True)
         publish_ui_event(
             "system",
             "Аварийная остановка: инструменты и задачи остановлены.",
@@ -415,10 +424,9 @@ class UiBridge:
         return {"stopped": True}
 
     def cancel_task(self, payload):
-        try:
-            task_id = int(payload.get("id"))
-        except (TypeError, ValueError) as error:
-            raise ValueError("Некорректный ID задачи.") from error
+        task_id = str(payload.get("id") or "").strip()
+        if not task_id:
+            raise ValueError("Некорректный ID задачи.")
         if not cancel_task(task_id):
             raise ValueError("Не удалось отменить задачу.")
         return {"cancelled": True, "id": task_id}

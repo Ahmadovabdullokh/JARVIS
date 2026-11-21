@@ -43,28 +43,28 @@ class TTSTests(unittest.TestCase):
         tts = TTS(voices=["en-US-AndrewNeural"])
         calls = 0
 
-        def fail_once_then_succeed(coroutine):
+        def fail_first_voice(coroutine):
             nonlocal calls
             calls += 1
             coroutine.close()
-            if calls == 1:
+            if calls <= 2:
                 raise RuntimeError("temporary connection error")
 
         with patch(
             "app.tts.asyncio.run",
-            side_effect=fail_once_then_succeed,
+            side_effect=fail_first_voice,
         ) as edge_run:
-            result = tts.speak("Ответ")
+            result = tts.speak("тест")
 
         self.assertTrue(result)
-        self.assertEqual(edge_run.call_count, 2)
+        self.assertEqual(edge_run.call_count, 3)
         self.assertEqual(
             tts.voices,
             [
                 "en-US-AndrewMultilingualNeural",
                 "en-US-AndrewNeural",
                 "ru-RU-DmitryNeural",
-                "en-US-GuyNeural",
+                "ru-RU-SvetlanaNeural",
             ],
         )
 

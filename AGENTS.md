@@ -42,22 +42,29 @@ WinForms, из-за чего импорт модуля падал. Патч об
   rate-limit — 10 неудач → бан IP на 120 c, `X-Forwarded-For` только от
   доверенных прокси (`JARVIS_TRUSTED_PROXIES`); `GET /health` открыт;
   `POST /stt` принимает аудио и гоняет через ffmpeg → `VoiceListener._transcribe`.
-- Политика методов: `remote.read_only` (по умолчанию `true`) или
-  `remote.allowed_methods` в `config/config.json` (см. `_remote_policy()`).
+- Политика методов: `remote.allowed_methods` (приоритет) или
+  `remote.read_only` в `config/config.json`; `_remote_policy()` читается
+  на каждом запросе. Для чата с телефона нужен `send_message`.
 - Туннели: `scripts\start_tunnel_cf.ps1` (cloudflared, quick или named
   tunnel через `remote.tunnel_name`), `scripts\start_tunnel.ps1` — Pinggy.
-- Android: `RemoteService` (foreground, /health-чек), WebView mic permission,
-  автореконнект 10 c. Release-подпись — `android/keystore.properties` + `*.jks`
-  (в .gitignore).
+- Android: нативный пульт `android/app/src/main/java/.../MainActivity.java`
+  (без WebView): чат через Bearer + `POST /rpc`, MIC → `POST /stt`,
+  экраны задач/журнала в меню, автореконнект. `RemoteService` держит
+  foreground-уведомление `/health`. Сборка:
+  `& "$env:USERPROFILE\gradle-8.9\bin\gradle.bat" -p android assembleDebug`;
+  release-подпись — `android/keystore.properties` + `*.jks` (.gitignore).
 - UI — PWA: `ui/manifest.webmanifest`, `ui/sw.js`, иконки `ui/icon-*.png`.
-- Push: `app/notifier.py` → Telegram о фоновых задачах
-  (`notifications.telegram` в конфиге).
+- Push: `app/notifier.py` → Telegram (`notifications.telegram`); chat_id
+  определяется сам через getUpdates после `/start`. Проверка:
+  `python -m app.notifier --enable --test`.
 
 ## Голос и LLM
 
 - TTS (`app/tts.py`): стриминг по предложениям (`split_sentences`),
   `stop()` для barge-in, `output_device` по имени/индексу из
-  `tts_output_device`.
+  `tts_output_device`. Голоса перебираются с 2 попытками и паузой;
+  `FALLBACK_VOICES` — Dmitry/Svetlana/Andrew (Guy отдаёт NoAudioReceived).
+  Диагностика: `python scripts/tts_test.py [--speak|--offline]`.
 - Barge-in: `voice_barge_in` в конфиге (default off — динамики
   попадают в микрофон, лучше с наушниками).
 - `speak_text` — озвучка текстовых ответов (default on).
