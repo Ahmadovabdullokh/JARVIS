@@ -15,6 +15,50 @@
     );
   }
 
+  function remoteMode() {
+    return /^https?:$/.test(window.location.protocol);
+  }
+
+  function remoteToken() {
+    var match = /[?&]token=([^&]+)/.exec(window.location.search);
+    if (match) {
+      var value = decodeURIComponent(match[1]);
+      try {
+        localStorage.setItem("jarvis_remote_token", value);
+      } catch (error) {
+        /* storage unavailable */
+      }
+      return value;
+    }
+    try {
+      return localStorage.getItem("jarvis_remote_token") || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function remoteRpc(id, method, payload) {
+    return fetch("/rpc?token=" + encodeURIComponent(remoteToken()), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "jarvis_request",
+        id: id,
+        method: method,
+        payload: payload || {},
+      }),
+    })
+      .then(function (response) {
+        return response.json();
+      })
+      .then(function (data) {
+        deliver(data);
+      })
+      .catch(function () {
+        /* network error — request will time out via pending timer */
+      });
+  }
+
   function pywebviewReady() {
     return Boolean(
       window.pywebview &&
@@ -24,7 +68,7 @@
   }
 
   function available() {
-    return Boolean(packageReady() || pywebviewReady());
+    return Boolean(remoteMode() || packageReady() || pywebviewReady());
   }
 
   function deliver(data) {
@@ -87,6 +131,9 @@
       method: method,
       payload: payload || {},
     });
+    if (remoteMode()) {
+      return remoteRpc(id, method, payload);
+    }
     if (pywebviewReady()) {
       return window.pywebview.api
         .rpc(message)

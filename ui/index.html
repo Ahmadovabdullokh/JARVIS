@@ -3,7 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#05070d">
+  <link rel="manifest" href="manifest.webmanifest">
   <title>J.A.R.V.I.S.</title>
+  <script>
+    if ("serviceWorker" in navigator &&
+        /^https?:$/.test(location.protocol)) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function () {});
+      });
+    }
+  </script>
   <script>
     (function () {
       window.__jarvisErrors = [];
@@ -183,6 +193,7 @@
                 </select>
                 <textarea id="chat-input" rows="3" placeholder="Напишите задачу и нажмите Enter…"></textarea>
                 <div class="composer-buttons">
+                  <button class="ghost-button" id="mic-button" hidden title="Голосовой ввод">MIC</button>
                   <button class="primary-button" id="send-button">Отправить</button>
                   <button class="danger-button" id="stop-button">Стоп</button>
                 </div>
@@ -341,6 +352,7 @@
               <label class="field"><span>stt_noise_adapt_k</span><input id="set-noise-k" class="input" type="number" step="0.1"></label>
               <label class="field"><span>max_speech_seconds</span><input id="set-max-speech" class="input" type="number" step="0.1"></label>
               <label class="field"><span>silence_duration</span><input id="set-silence" class="input" type="number" step="0.1"></label>
+              <label class="check-line"><input type="checkbox" id="set-speak-text"> Озвучивать ответы на текст</label>
             </div>
 
             <div class="settings-card">

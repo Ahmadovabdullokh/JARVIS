@@ -1252,3 +1252,14 @@ textarea::placeholder {
     display: none;
   }
 }
+
+#mic-button.recording {
+  border-color: var(--error, #ff5a5a);
+  color: var(--error, #ff5a5a);
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}

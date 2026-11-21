@@ -71,6 +71,9 @@
     connected: false,
     sending: false,
     polling: false,
+    pendingMessages: [],
+    mediaRecorder: null,
+    audioChunks: [],
     forceScroll: true,
     taskFilter: "all",
     journalFilter: "all",
@@ -82,6 +85,7 @@
     iterations: 0,
     toolCount: 0,
     lastAnswer: "",
+    streamIndex: null,
   };
 
   const els = {
@@ -108,6 +112,7 @@
     messageList: byId("message-list"),
     chatEmpty: byId("chat-empty"),
     chatInput: byId("chat-input"),
+    micButton: byId("mic-button"),
     sendButton: byId("send-button"),
     stopButton: byId("stop-button"),
     clearChat: byId("clear-chat"),
@@ -158,6 +163,7 @@
     setNoiseK: byId("set-noise-k"),
     setMaxSpeech: byId("set-max-speech"),
     setSilence: byId("set-silence"),
+    setSpeakText: byId("set-speak-text"),
     openConfig: byId("open-config"),
     openAudit: byId("open-audit"),
     runDoctor: byId("run-doctor"),
@@ -203,11 +209,13 @@
       if (data && data.snapshot) {
         applySnapshot(data.snapshot);
       }
+      flushPendingMessages();
     } catch (error) {
       setConnected(false);
     } finally {
       if (state.polling) {
-        setTimeout(poll, 80);
+        var remoteDelay = /^https?:$/.test(window.location.protocol) ? 500 : 80;
+        setTimeout(poll, remoteDelay);
       }
     }
   }
@@ -279,7 +287,19 @@
         appendMessage("user", textOf(payload));
         break;
       case "assistant":
-        appendMessage("assistant", textOf(payload));
+        if (state.streamIndex != null &&
+            state.messages[state.streamIndex]) {
+          state.messages[state.streamIndex].text = textOf(payload);
+          state.messages[state.streamIndex].time = Date.now();
+          state.streamIndex = null;
+          state.forceScroll = true;
+          renderMessages();
+        } else {
+          appendMessage("assistant", textOf(payload));
+        }
+        break;
+      case "assistant_partial":
+        updateStreamMessage(textOf(payload));
         break;
       case "error":
         appendMessage("error", textOf(payload));
@@ -358,6 +378,29 @@
     if (text.indexOf("Настройки сохранены") !== -1) {
       toast(text, "success");
     }
+  }
+
+  function updateStreamMessage(text) {
+    if (!text) return;
+    if (state.streamIndex == null ||
+        !state.messages[state.streamIndex] ||
+        state.messages[state.streamIndex].role !== "assistant") {
+      state.messages.push({
+        role: "assistant",
+        text: text,
+        time: Date.now(),
+        streaming: true,
+      });
+      state.streamIndex = state.messages.length - 1;
+      if (state.messages.length > 350) {
+        state.messages.splice(0, state.messages.length - 350);
+        state.streamIndex = state.messages.length - 1;
+      }
+    } else {
+      state.messages[state.streamIndex].text = text;
+    }
+    state.forceScroll = true;
+    renderMessages();
   }
 
   function appendMessage(role, value) {
@@ -754,6 +797,7 @@
     setNumber(els.setNoiseK, settings.stt_noise_adapt_k, 3.0);
     setNumber(els.setMaxSpeech, settings.max_speech_seconds, 12.0);
     setNumber(els.setSilence, settings.silence_duration, 0.7);
+    els.setSpeakText.checked = settings.speak_text !== false;
     els.previewToggle.checked = Boolean(settings.transcript_preview);
   }
 
@@ -839,6 +883,34 @@
     els.micValue.textContent = Math.round(normalized * 100) + "%";
   }
 
+  function queueMessage(text) {
+    state.pendingMessages.push({ text: text, mode: state.mode });
+    if (state.pendingMessages.length > 20) {
+      state.pendingMessages.shift();
+    }
+    toast("Нет связи — сообщение в очереди (" +
+      state.pendingMessages.length + ").", "warning");
+  }
+
+  async function flushPendingMessages() {
+    if (!state.pendingMessages.length) return;
+    while (state.pendingMessages.length && !state.sending) {
+      const item = state.pendingMessages[0];
+      try {
+        await Api.rpc("send_message", {
+          text: item.text,
+          mode: item.mode || state.mode,
+        });
+        state.pendingMessages.shift();
+      } catch (error) {
+        break;
+      }
+    }
+    if (!state.pendingMessages.length) {
+      toast("Очередь сообщений отправлена.", "success");
+    }
+  }
+
   async function sendMessage() {
     if (state.sending) return;
     const text = els.chatInput.value.trim();
@@ -851,10 +923,97 @@
       els.chatInput.value = "";
       els.chatInput.focus();
     } catch (error) {
-      toast(error.message, "error");
+      if (/^https?:$/.test(window.location.protocol)) {
+        queueMessage(text);
+        els.chatInput.value = "";
+      } else {
+        toast(error.message, "error");
+      }
     } finally {
       state.sending = false;
       updateSendButton();
+    }
+  }
+
+  function remoteToken() {
+    var match = /[?&]token=([^&]+)/.exec(window.location.search);
+    if (match) {
+      var value = decodeURIComponent(match[1]);
+      try {
+        localStorage.setItem("jarvis_remote_token", value);
+      } catch (error) { /* storage unavailable */ }
+      return value;
+    }
+    try {
+      return localStorage.getItem("jarvis_remote_token") || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  async function toggleVoiceInput() {
+    if (state.mediaRecorder &&
+        state.mediaRecorder.state !== "inactive") {
+      state.mediaRecorder.stop();
+      return;
+    }
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      toast("Браузер не поддерживает запись с микрофона.", "error");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      state.audioChunks = [];
+      state.mediaRecorder = new MediaRecorder(stream);
+      state.mediaRecorder.ondataavailable = function (event) {
+        if (event.data && event.data.size) {
+          state.audioChunks.push(event.data);
+        }
+      };
+      state.mediaRecorder.onstop = async function () {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        els.micButton.classList.remove("recording");
+        await sendAudioForStt();
+      };
+      state.mediaRecorder.start();
+      els.micButton.classList.add("recording");
+      els.micButton.textContent = "■";
+      toast("Идёт запись… нажмите MIC ещё раз для остановки.", "system");
+    } catch (error) {
+      toast("Нет доступа к микрофону: " + error.message, "error");
+    }
+  }
+
+  async function sendAudioForStt() {
+    if (!state.audioChunks.length) return;
+    const blob = new Blob(state.audioChunks, {
+      type: state.mediaRecorder
+        ? state.mediaRecorder.mimeType || "audio/webm"
+        : "audio/webm",
+    });
+    els.micButton.disabled = true;
+    try {
+      const token = remoteToken();
+      const response = await fetch(
+        "/stt?token=" + encodeURIComponent(token),
+        { method: "POST", body: blob }
+      );
+      const data = await response.json().catch(function () { return {}; });
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Ошибка распознавания.");
+      }
+      const text = String(data.text || "").trim();
+      if (text) {
+        els.chatInput.value = text;
+        els.chatInput.focus();
+      } else {
+        toast("Ничего не распознано.", "warning");
+      }
+    } catch (error) {
+      toast("Голосовой ввод: " + error.message, "error");
+    } finally {
+      els.micButton.disabled = false;
+      els.micButton.textContent = "MIC";
     }
   }
 
@@ -920,6 +1079,7 @@
       stt_noise_adapt_k: Number(els.setNoiseK.value),
       max_speech_seconds: Number(els.setMaxSpeech.value),
       silence_duration: Number(els.setSilence.value),
+      speak_text: els.setSpeakText.checked,
     };
     els.settingsSave.disabled = true;
     els.settingsSave.textContent = "Сохранение…";
@@ -1233,6 +1393,11 @@
     });
 
     els.sendButton.addEventListener("click", sendMessage);
+    els.micButton.addEventListener("click", toggleVoiceInput);
+    if (/^https?:$/.test(window.location.protocol) &&
+        navigator.mediaDevices && window.MediaRecorder) {
+      els.micButton.hidden = false;
+    }
     els.stopButton.addEventListener("click", stopAssistant);
     els.clearChat.addEventListener("click", function () {
       state.messages = [];
