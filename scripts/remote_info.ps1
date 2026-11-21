@@ -29,9 +29,10 @@ if (Test-Path $configFile) {
     $cfg = Get-Content $configFile -Raw | ConvertFrom-Json
     if ($cfg.remote -and $cfg.remote.token) { $token = $cfg.remote.token }
 }
-if (-not $token -and (Test-Path $statusFile)) {
-    $local = (Get-Content $statusFile -Raw | ConvertFrom-Json).url
-    if ($local -match "token=([^&]+)") { $token = $Matches[1] }
+if (-not $token) {
+    Write-Host "Токен не найден в config.json (remote.token)."
+    Write-Host "Запустите scripts\start_remote.ps1, чтобы он создал токен."
+    exit 1
 }
 
 Write-Host ""
