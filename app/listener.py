@@ -26,7 +26,7 @@ class VoiceListener:
         noise_adapt_k=3.0,
         noise_max_ratio=8.0,
         language="ru",
-        model="whisper-large-v3-turbo",
+        model="whisper-large-v3",
         prompt="",
         local_model="",
         local_device="cpu",

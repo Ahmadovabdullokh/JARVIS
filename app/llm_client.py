@@ -125,6 +125,14 @@ class LLMClient:
         self.retry_after = 0.0
         self.primary_auth_failed = False
         self.fallback_notice_shown = False
+
+        # Circuit breaker: после CIRCUIT_THRESHOLD подряд неудачных
+        # запросов эндпоинт «открывается» на CIRCUIT_COOLDOWN секунд,
+        # и трафик сразу идёт на резервный провайдер.
+        self._circuit = {
+            "primary": {"fails": 0, "open_until": 0.0},
+            "fallback": {"fails": 0, "open_until": 0.0},
+        }
         self.history = []
         self.history_summary = ""
         if self.session_store is not None and self.session_id:
@@ -394,7 +402,35 @@ class LLMClient:
                 )
         return None, False
 
+    CIRCUIT_THRESHOLD = 3
+    CIRCUIT_COOLDOWN = 300.0
+
+    def _circuit_open(self, kind):
+        state = self._circuit[kind]
+        return time.monotonic() < state["open_until"]
+
+    def _circuit_success(self, kind):
+        state = self._circuit[kind]
+        if state["fails"] or state["open_until"]:
+            state["fails"] = 0
+            state["open_until"] = 0.0
+
+    def _circuit_fail(self, kind):
+        state = self._circuit[kind]
+        state["fails"] += 1
+        if state["fails"] >= self.CIRCUIT_THRESHOLD:
+            state["open_until"] = (
+                time.monotonic() + self.CIRCUIT_COOLDOWN
+            )
+            state["fails"] = 0
+            log.info(
+                f"[{self.label}] Circuit breaker: {kind} недоступен, "
+                f"пауза {self.CIRCUIT_COOLDOWN:.0f} c."
+            )
+
     def _request_fallback(self, payload, retries=None):
+        if self._circuit_open("fallback"):
+            return None
         fallback_payload = dict(payload)
         if self.fallback_model:
             fallback_payload["model"] = self.fallback_model
@@ -416,6 +452,7 @@ class LLMClient:
                 return None
 
             if message is not None:
+                self._circuit_success("fallback")
                 return message
             if not retryable or attempt >= attempts:
                 break
@@ -430,6 +467,7 @@ class LLMClient:
                 f"повтор через {delay:.1f} c."
             )
             self._sleep(delay)
+        self._circuit_fail("fallback")
         return None
 
     def _request(self, payload, api_url=None, api_key=None):
@@ -450,7 +488,16 @@ class LLMClient:
                 )
             return self._request_fallback(payload)
 
-        for attempt in range(self.max_retries + 1):
+        primary_open = self._circuit_open("primary")
+        if primary_open and not self.fallback_api_url:
+            log.info(
+                f"[{self.label}] Основной провайдер недоступен "
+                "(circuit breaker), повтор позже."
+            )
+
+        for attempt in (
+            range(0) if primary_open else range(self.max_retries + 1)
+        ):
             if self._cancelled():
                 return None
             try:
@@ -460,6 +507,7 @@ class LLMClient:
                     target_key,
                 )
                 if message is not None:
+                    self._circuit_success("primary")
                     return message
                 if not retryable:
                     break
@@ -486,6 +534,9 @@ class LLMClient:
 
         if self._cancelled():
             return None
+
+        if last_error is not None:
+            self._circuit_fail("primary")
 
         if self.fallback_api_url:
             log.info(f"[{self.label}] Пробую резервный LLM-эндпоинт.")
@@ -599,6 +650,106 @@ class LLMClient:
             self._handle_request_error(error)
             return ""
 
+    def ask_stream(self, prompt, system=None, on_delta=None):
+        """Потоковый вариант ask(): SSE-стриминг для chat-режима.
+
+        on_delta вызывается с накопленным текстом по мере
+        поступления токенов. При любой ошибке возвращается
+        обычный нестриминговый запрос.
+        """
+
+        if not self.use_llm or (
+            not self.api_key and not self.allow_without_key
+        ):
+            return ""
+
+        answer = self._ask_stream_once(
+            prompt, system, on_delta, self.api_url, self.api_key
+        )
+        if answer:
+            return answer
+
+        if self.fallback_api_url:
+            answer = self._ask_stream_once(
+                prompt,
+                system,
+                on_delta,
+                self.fallback_api_url,
+                self.fallback_api_key,
+            )
+            if answer:
+                return answer
+
+        # Стриминг не удался — обычный запрос.
+        return self.ask(prompt, system=system)
+
+    def _ask_stream_once(self, prompt, system, on_delta, api_url, api_key):
+        payload = {
+            "model": self.fallback_model
+            if api_url == self.fallback_api_url and self.fallback_model
+            else self.model,
+            "messages": self._messages(system, prompt),
+            "temperature": 0.2,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        parts = []
+        try:
+            response = requests.post(
+                api_url,
+                headers=self._headers(api_key),
+                json=payload,
+                timeout=self.request_timeout,
+                stream=True,
+            )
+            if response.status_code != 200:
+                self.last_error = self._error_summary(
+                    response.status_code,
+                    response.text[:500],
+                )
+                log.info(
+                    f"[{self.label} STREAM] HTTP "
+                    f"{response.status_code}: {response.text[:300]}"
+                )
+                return ""
+
+            for raw in response.iter_lines(decode_unicode=True):
+                if self._cancelled():
+                    return ""
+                if not raw:
+                    continue
+                line = raw.strip()
+                if not line.startswith("data:"):
+                    continue
+                data_text = line[5:].strip()
+                if data_text == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_text)
+                except ValueError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                piece = delta.get("content") or ""
+                if not piece:
+                    continue
+                parts.append(piece)
+                if on_delta is not None:
+                    try:
+                        on_delta("".join(parts))
+                    except Exception:
+                        pass
+        except Exception as error:
+            self._handle_request_error(error)
+            return ""
+
+        answer = "".join(parts).strip()
+        if answer:
+            self._append_history(prompt, answer)
+        return answer
+
     def _wrap_untrusted(self, name, text):
         if name not in self.untrusted_tool_names:
             return text
@@ -702,6 +853,9 @@ class LLMClient:
         task_id=None,
         trace=None,
         parallel_safe=None,
+        max_tokens=None,
+        parallel_tool_calls=None,
+        compact_max_chars=None,
     ):
         if not self.use_llm or (
             not self.api_key and not self.allow_without_key
@@ -711,7 +865,12 @@ class LLMClient:
         messages = self._messages(system, prompt)
         max_iterations = max(1, int(max_iterations or 18))
         request_tools = tools
-        request_max_tokens = self.max_tokens
+        request_max_tokens = max(256, int(max_tokens or self.max_tokens))
+        effective_parallel = (
+            self.parallel_tool_calls or bool(parallel_tool_calls)
+        )
+        compact_limit = max(2000, int(compact_max_chars or 10000))
+        budget_notified = set()
 
         if task_manager is not None and task_id:
             try:
@@ -739,7 +898,25 @@ class LLMClient:
                 max_iterations=max_iterations,
             )
 
-            self._compact_tool_messages(messages)
+            self._compact_tool_messages(messages, max_chars=compact_limit)
+
+            for threshold in (0.75, 0.9):
+                if (
+                    threshold not in budget_notified
+                    and iteration
+                    >= max(2, int(max_iterations * threshold))
+                ):
+                    budget_notified.add(threshold)
+                    remaining = max_iterations - iteration + 1
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[Система] Осталось ~{remaining} шагов "
+                            "агентского цикла. Прекрати исследование, "
+                            "заверши правки, прогони проверку и дай "
+                            "итоговый отчёт."
+                        ),
+                    })
 
             payload = {
                 "model": self.model,
@@ -751,7 +928,7 @@ class LLMClient:
             if request_tools:
                 payload["tools"] = request_tools
                 payload["tool_choice"] = "auto"
-                if self.parallel_tool_calls:
+                if effective_parallel:
                     payload["parallel_tool_calls"] = True
 
             try:
@@ -792,7 +969,7 @@ class LLMClient:
 
             results = []
             can_parallel = (
-                self.parallel_tool_calls and len(tool_calls) > 1
+                effective_parallel and len(tool_calls) > 1
             )
             if can_parallel and parallel_safe is not None:
                 can_parallel = all(
@@ -847,7 +1024,10 @@ class LLMClient:
 
         final_answer = ""
         if not self._cancelled():
-            self._compact_tool_messages(messages, max_chars=8000)
+            self._compact_tool_messages(
+                messages,
+                max_chars=max(4000, compact_limit // 2),
+            )
             final_payload = {
                 "model": self.model,
                 "messages": messages + [

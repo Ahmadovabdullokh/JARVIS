@@ -178,4 +178,20 @@ def handle_command(text: str, memory=None):
         memory.forget_all()
         return "Память очищена, сэр."
 
+    forget_match = re.match(
+        r"^(?:удали из памяти|забудь про|забудь)\s+(.+)$",
+        raw_text,
+        re.IGNORECASE,
+    )
+
+    if forget_match:
+        query = forget_match.group(1).strip()
+        if memory is None:
+            return "Модуль памяти недоступен, сэр."
+
+        removed = memory.forget(query)
+        if removed:
+            return f"Забыл, сэр: {removed[0]}."
+        return "Подходящих фактов в памяти не нашёл, сэр."
+
     return None

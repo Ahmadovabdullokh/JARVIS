@@ -26,6 +26,10 @@ PROVIDERS = ("deepseek", "groq", "ollama")
 DEFAULT_CONFIG = {
     "require_wake_word": False,
     "transcript_preview": False,
+    "speak_text": True,
+    "voice_barge_in": False,
+    "tts_output_device": "",
+    "tts_stream_sentences": True,
     "chat_mode": "tasks",
     "memory_size": 50,
     "tts_offline_fallback": False,
@@ -50,6 +54,9 @@ DEFAULT_CONFIG = {
         "backend": "deepseek",
         "project": "",
         "max_iterations": 60,
+        "max_tokens": 8000,
+        "parallel_tool_calls": True,
+        "compact_max_chars": 24000,
         "timeout": 900,
         "fallback": True,
     },
@@ -67,6 +74,32 @@ DEFAULT_CONFIG = {
 
 def _as_dict(value):
     return value if isinstance(value, dict) else {}
+
+
+_KEYRING_SERVICE = "jarvis"
+_KEYRING_CACHE = {}
+
+
+def _keyring_secret(name):
+    """Читает секрет из системного хранилища (keyring), если он там есть.
+
+    Ключи можно положить командой:
+        python -c "import keyring; keyring.set_password('jarvis', 'deepseek_api_key', 'sk-...')"
+    .env и config.json продолжают работать как раньше — keyring
+    используется только как дополнительный fallback.
+    """
+
+    if name in _KEYRING_CACHE:
+        return _KEYRING_CACHE[name]
+    value = ""
+    try:
+        import keyring
+
+        value = str(keyring.get_password(_KEYRING_SERVICE, name) or "")
+    except Exception:
+        value = ""
+    _KEYRING_CACHE[name] = value
+    return value
 
 
 def load_config(dotenv_loader=None, validate=True):
@@ -166,6 +199,7 @@ def validate_config(config):
 
     check_type(None, "require_wake_word", bool)
     check_type(None, "transcript_preview", bool)
+    check_type(None, "speak_text", bool)
     check_type(None, "memory_size", int)
     check_type(None, "max_speech_seconds", float)
     check_type(None, "silence_duration", float)
@@ -222,6 +256,7 @@ def get_groq_config(config: dict) -> dict:
         groq.get("api_key")
         or config.get("groq_api_key")
         or os.getenv("GROQ_API_KEY")
+        or _keyring_secret("groq_api_key")
         or ""
     )
 
@@ -241,7 +276,7 @@ def get_groq_config(config: dict) -> dict:
         groq.get("stt_model")
         or config.get("stt_model")
         or config.get("groq_model")
-        or "whisper-large-v3-turbo"
+        or "whisper-large-v3"
     )
 
     stt_prompt = (
@@ -332,6 +367,7 @@ def get_llm_config(config: dict) -> dict:
             or config.get("deepseek_api_key")
             or os.getenv("DEEPSEEK_API_KEY")
             or os.getenv("LLM_API_KEY")
+            or _keyring_secret("deepseek_api_key")
             or ""
         )
         model = (
@@ -346,6 +382,7 @@ def get_llm_config(config: dict) -> dict:
             llm.get("api_key")
             or config.get("groq_api_key")
             or os.getenv("GROQ_API_KEY")
+            or _keyring_secret("groq_api_key")
             or ""
         )
         model = (
@@ -421,11 +458,23 @@ def get_tts_config(config: dict) -> dict:
     if not isinstance(voices, list):
         voices = []
 
+    device = tts.get(
+        "output_device",
+        config.get("tts_output_device", ""),
+    )
+
     return {
         "rate": int(tts.get("rate", config.get("tts_rate", 175))),
         "voice": voice,
         "pitch": str(tts.get("pitch", config.get("tts_pitch", "-8Hz"))),
         "voices": [str(item) for item in voices],
+        "output_device": str(device or "").strip() or None,
+        "stream_sentences": bool(
+            tts.get(
+                "stream_sentences",
+                config.get("tts_stream_sentences", True),
+            )
+        ),
     }
 
 

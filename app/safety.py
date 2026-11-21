@@ -292,6 +292,9 @@ class SafetyManager:
                     result="USER_CANCELLED",
                 )
                 return False
+            # Пользователь подтвердил один раз — не спрашиваем
+            # повторно в рамках этой сессии.
+            self._session_allow.add(spec.name)
 
         self._audit(
             event="start",

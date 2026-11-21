@@ -14,6 +14,7 @@ from app.main import (
     get_task_snapshot,
     publish_ui_event,
     set_chat_mode,
+    set_speak_text,
     set_transcript_preview,
     stop_assistant,
     submit_chat_message,
@@ -78,6 +79,7 @@ class UiBridge:
         self._last_tasks = 0.0
         self._last_mic = 0.0
         self._started_at = time.monotonic()
+        self._event_cursors = {}
 
     def start(self, start_backend=True):
         if self._started:
@@ -187,9 +189,12 @@ class UiBridge:
         )
         return data
 
-    def poll(self):
+    def poll(self, consumer="default"):
+        cursor = self._event_cursors.get(consumer, 0)
+        latest = cursor
         events = []
-        for event_type, payload in drain_ui_events():
+        for seq, event_type, payload in drain_ui_events(cursor):
+            latest = max(latest, seq)
             if event_type == "command_catalog":
                 with self._lock:
                     self._catalog = _json_safe(payload)
@@ -200,6 +205,7 @@ class UiBridge:
                     "ts": time.time(),
                 }
             )
+        self._event_cursors[consumer] = latest
         return {
             "events": events,
             "snapshot": self._snapshot(),
@@ -225,6 +231,7 @@ class UiBridge:
             "transcript_preview": bool(
                 config.get("transcript_preview", False)
             ),
+            "speak_text": bool(config.get("speak_text", True)),
             "category_planning": bool(
                 agent.get("category_planning", True)
             ),
@@ -326,6 +333,9 @@ class UiBridge:
         config["transcript_preview"] = bool(
             payload.get("transcript_preview", False)
         )
+        config["speak_text"] = bool(
+            payload.get("speak_text", True)
+        )
         agent["category_planning"] = bool(
             payload.get("category_planning", True)
         )
@@ -368,6 +378,7 @@ class UiBridge:
         set_transcript_preview(
             bool(payload.get("transcript_preview", False))
         )
+        set_speak_text(bool(payload.get("speak_text", True)))
         publish_ui_event(
             "system",
             "Настройки сохранены. Изменения применятся после "
@@ -471,7 +482,7 @@ class UiBridge:
         log.info(f"[WEB CLIENT] {kind}: {message}")
         return {"ok": True}
 
-    def handle(self, method, payload=None):
+    def handle(self, method, payload=None, consumer="default"):
         payload = payload if isinstance(payload, dict) else {}
         handlers = {
             "bootstrap": lambda: self.bootstrap(),
@@ -479,7 +490,7 @@ class UiBridge:
                 {"kind": "ready", "message": "UI initialized"}
             ),
             "client_error": lambda: self.client_event(payload),
-            "poll": lambda: self.poll(),
+            "poll": lambda: self.poll(consumer),
             "send_message": lambda: self.send_message(payload),
             "stop": lambda: self.stop(),
             "cancel_task": lambda: self.cancel_task(payload),

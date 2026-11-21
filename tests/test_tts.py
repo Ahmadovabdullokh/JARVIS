@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.main import get_tts_config
-from app.tts import TTS
+from app.tts import TTS, split_sentences
 
 
 class TTSTests(unittest.TestCase):
@@ -124,6 +124,28 @@ class TTSTests(unittest.TestCase):
             result = tts.speak("Проверка")
 
         self.assertTrue(result)
+
+
+class SplitSentencesTests(unittest.TestCase):
+
+    def test_splits_on_sentence_endings(self):
+        parts = split_sentences("Первое. Второе! Третье?")
+        self.assertEqual(parts, ["Первое.", "Второе!", "Третье?"])
+
+    def test_single_sentence_stays_whole(self):
+        self.assertEqual(
+            split_sentences("Одна фраза без точки"),
+            ["Одна фраза без точки"],
+        )
+
+    def test_long_sentence_is_cut_by_words(self):
+        text = " ".join(["слово"] * 200)
+        parts = split_sentences(text, max_chars=100)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(len(p) <= 100 for p in parts))
+
+    def test_empty_text_returns_original(self):
+        self.assertEqual(split_sentences(""), [""])
 
 
 if __name__ == "__main__":

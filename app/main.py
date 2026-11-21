@@ -1,3 +1,5 @@
+import collections
+import itertools
 import queue
 import threading
 import time
@@ -34,11 +36,15 @@ from app.voice_normalizer import process_voice_text
 log = get_logger(__name__)
 
 _COMMAND_QUEUE = queue.Queue()
-_UI_EVENT_QUEUE = queue.Queue()
+_UI_EVENTS = collections.deque(maxlen=20000)
+_UI_EVENT_SEQ = itertools.count(1)
+_UI_EVENTS_LOCK = threading.Lock()
 _STOP_EVENT = threading.Event()
 _ACTIVE_AGENT = None
 _LISTENER = None
 _TRANSCRIPT_PREVIEW = False
+_SPEAK_TEXT = True
+_BARGE_IN = False
 _CHAT_MODE = "tasks"
 
 CHAT_MODES = ("chat", "tasks", "code")
@@ -76,6 +82,20 @@ def set_transcript_preview(enabled: bool) -> None:
     _TRANSCRIPT_PREVIEW = bool(enabled)
 
 
+def speak_text_enabled():
+    return _SPEAK_TEXT
+
+
+def set_speak_text(enabled: bool) -> None:
+    global _SPEAK_TEXT
+    _SPEAK_TEXT = bool(enabled)
+
+
+def set_barge_in(enabled: bool) -> None:
+    global _BARGE_IN
+    _BARGE_IN = bool(enabled)
+
+
 def get_task_snapshot():
     if _ACTIVE_AGENT is None:
         return []
@@ -96,20 +116,33 @@ def cancel_task(task_id) -> bool:
 
 
 def publish_ui_event(event_type: str, payload) -> None:
-    _UI_EVENT_QUEUE.put((event_type, payload))
+    with _UI_EVENTS_LOCK:
+        _UI_EVENTS.append((next(_UI_EVENT_SEQ), event_type, payload))
 
 
-def drain_ui_events():
-    events = []
-    while True:
-        try:
-            events.append(_UI_EVENT_QUEUE.get_nowait())
-        except queue.Empty:
-            return events
+def drain_ui_events(after_seq: int = 0):
+    """Возвращает события с seq > after_seq как (seq, type, payload).
+
+    Очередь не очищается: каждый потребитель (HUD на ПК, мобильный
+    клиент) хранит свой курсор и получает все события.
+    """
+
+    with _UI_EVENTS_LOCK:
+        return [
+            (seq, event_type, payload)
+            for seq, event_type, payload in _UI_EVENTS
+            if seq > after_seq
+        ]
 
 
 def stop_assistant() -> None:
     _STOP_EVENT.set()
+    try:
+        from app import notifier
+
+        notifier.notify("JARVIS: аварийная остановка.", kind="system")
+    except Exception:
+        pass
     if _ACTIVE_AGENT is not None:
         try:
             _ACTIVE_AGENT.safety.stop()
@@ -207,6 +240,65 @@ def normalize_voice_text(text: str, wake_words=None):
 # SPEECH
 # ============================================================
 
+def _speak_with_barge_in(tts: TTS, text: str) -> bool:
+    """Озвучивает текст; при включённом voice_barge_in слушает
+    микрофон и прерывает речь, если пользователь заговорил.
+
+    Без наушников динамики TTS попадают в микрофон, поэтому
+    срабатывание требует повышенного порога и серии замеров.
+    """
+
+    if not _BARGE_IN or _LISTENER is None:
+        return tts.speak(text)
+
+    result = {}
+    done = threading.Event()
+
+    def worker():
+        try:
+            result["ok"] = tts.speak(text)
+        except Exception as error:
+            result["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(
+        target=worker,
+        name="JARVIS-TTS",
+        daemon=True,
+    ).start()
+
+    threshold_base = (
+        _LISTENER.threshold_for(_LISTENER.noise_floor)
+        if hasattr(_LISTENER, "threshold_for")
+        else 0.02
+    )
+    trigger_level = max(threshold_base * 4.0, 0.03)
+    hits = 0
+
+    while not done.wait(timeout=0.25):
+        try:
+            level = _LISTENER.measure_level(0.2)
+        except Exception:
+            level = 0.0
+        if level >= trigger_level:
+            hits += 1
+            if hits >= 3:
+                log.info(
+                    f"[BARGE-IN] Речь пользователя поверх TTS "
+                    f"(level={level:.4f}), прерываю озвучку."
+                )
+                tts.stop()
+                break
+        else:
+            hits = max(0, hits - 1)
+
+    done.wait(timeout=15)
+    if "error" in result:
+        raise result["error"]
+    return bool(result.get("ok", False))
+
+
 def speak(tts: TTS, text: str) -> bool:
     """
     Озвучивает текст и обновляет статус анимации.
@@ -218,10 +310,13 @@ def speak(tts: TTS, text: str) -> bool:
     if not text:
         return True
 
+    if len(text) > 1500:
+        text = text[:1500].rstrip() + "…"
+
     set_status("speaking")
 
     try:
-        ok = tts.speak(text)
+        ok = _speak_with_barge_in(tts, text)
         if not ok:
             publish_ui_event(
                 "error",
@@ -312,6 +407,8 @@ def initialize():
     global _LISTENER
     _LISTENER = listener
     set_transcript_preview(bool(config.get("transcript_preview", False)))
+    set_speak_text(bool(config.get("speak_text", True)))
+    set_barge_in(bool(config.get("voice_barge_in", False)))
 
     # Синтез речи
     tts = TTS(
@@ -321,6 +418,10 @@ def initialize():
         voices=tts_config["voices"],
         offline_fallback=bool(
             config.get("tts_offline_fallback", False)
+        ),
+        output_device=tts_config.get("output_device"),
+        stream_sentences=bool(
+            tts_config.get("stream_sentences", True)
         ),
     )
 
@@ -716,11 +817,33 @@ def process_command(
         if copilot_answer is not None:
             answer = copilot_answer
         elif mode == "chat":
-            answer = llm.ask(text, system=system)
+            last_emit = [0.0]
+
+            def _on_delta(partial):
+                now = time.monotonic()
+                if now - last_emit[0] >= 0.15:
+                    last_emit[0] = now
+                    publish_ui_event("assistant_partial", partial)
+
+            answer = llm.ask_stream(
+                text, system=system, on_delta=_on_delta
+            )
         else:
+            tool_kwargs = {}
             if mode == "code":
                 tools = pc_agent.get_code_llm_tools(text)
                 log.info(f"[CODE MODE] Инструментов: {len(tools)}")
+                tool_kwargs = {
+                    "max_tokens": int(
+                        code_config.get("max_tokens", 8000)
+                    ),
+                    "parallel_tool_calls": bool(
+                        code_config.get("parallel_tool_calls", True)
+                    ),
+                    "compact_max_chars": int(
+                        code_config.get("compact_max_chars", 24000)
+                    ),
+                }
             else:
                 tools = pc_agent.get_llm_tools(
                     text,
@@ -737,6 +860,7 @@ def process_command(
                 task_id=task_id,
                 trace=trace,
                 parallel_safe=pc_agent.is_tool_parallel_safe,
+                **tool_kwargs,
             )
 
         if answer:
@@ -960,7 +1084,9 @@ def run_assistant(
                     llm=llm,
                     memory=memory,
                     persona_config=persona_config,
-                    speak_output=(source == "voice"),
+                    speak_output=(
+                        source == "voice" or speak_text_enabled()
+                    ),
                     source=source,
                     mode=mode,
                 )

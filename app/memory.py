@@ -113,6 +113,31 @@ class Memory:
             self._data = {"facts": [], "profile": {}}
             self._save()
 
+    def forget(self, query):
+        """Удаляет факты, совпадающие с запросом.
+
+        Возвращает список удалённых фактов.
+        """
+
+        terms = _terms(query)
+        if not terms:
+            return []
+
+        with self._lock:
+            kept = []
+            removed = []
+            for fact in self._data["facts"]:
+                if _score(terms, fact) >= 2 * len(terms) or all(
+                    term in str(fact).lower() for term in terms[:3]
+                ):
+                    removed.append(fact)
+                else:
+                    kept.append(fact)
+            if removed:
+                self._data["facts"] = kept
+                self._save()
+            return removed
+
     def set_profile(self, key, value):
         key = str(key or "").strip()
         if not key:
