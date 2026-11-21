@@ -50,11 +50,18 @@ _CHAT_MODE = "tasks"
 CHAT_MODES = ("chat", "tasks", "code")
 
 
-def submit_chat_message(text: str, mode: str = None) -> bool:
+def submit_chat_message(
+    text: str,
+    mode: str = None,
+    on_reply=None,
+) -> bool:
     text = str(text).strip()
     if not text:
         return False
-    _COMMAND_QUEUE.put(("chat", text, get_chat_mode(mode)))
+    item = ("chat", text, get_chat_mode(mode))
+    if on_reply is not None:
+        item = (*item, on_reply)
+    _COMMAND_QUEUE.put(item)
     return True
 
 
@@ -135,14 +142,19 @@ def drain_ui_events(after_seq: int = 0):
         ]
 
 
-def stop_assistant() -> None:
+def stop_assistant(emergency: bool = False) -> None:
     _STOP_EVENT.set()
-    try:
-        from app import notifier
+    if emergency:
+        try:
+            from app import notifier
 
-        notifier.notify("JARVIS: аварийная остановка.", kind="system")
-    except Exception:
-        pass
+            notifier.notify(
+                "🛑 JARVIS: аварийная остановка — инструменты и задачи "
+                "остановлены.",
+                kind="errors",
+            )
+        except Exception:
+            pass
     if _ACTIVE_AGENT is not None:
         try:
             _ACTIVE_AGENT.safety.stop()
@@ -500,7 +512,7 @@ def initialize():
     pc_agent.set_announcer(announce)
 
     def emergency_stop():
-        stop_assistant()
+        stop_assistant(emergency=True)
         announce("Аварийная остановка выполнена.")
 
     hotkey_status = pc_agent.safety.start_hotkey_listener(
@@ -621,6 +633,7 @@ def process_command(
     speak_output: bool = True,
     source: str = "chat",
     mode: str = "tasks",
+    on_reply=None,
 ) -> bool:
     """
     Обрабатывает команду.
@@ -648,6 +661,14 @@ def process_command(
 
     def respond(message: str) -> None:
         publish_ui_event("assistant", message)
+        if on_reply is not None:
+            try:
+                on_reply(message)
+            except Exception as error:
+                log.info(
+                    f"[REPLY CALLBACK] "
+                    f"{type(error).__name__}: {error}"
+                )
         if speak_output:
             speak(tts, message)
 
@@ -942,6 +963,16 @@ def run_assistant(
     publish_ui_event("assistant", startup)
     publish_ui_event("command_catalog", get_command_catalog(pc_agent))
 
+    try:
+        from app import telegram_bot
+
+        telegram_bot.start()
+    except Exception as error:
+        log.info(
+            f"[TELEGRAM] Не удалось запустить управление: "
+            f"{type(error).__name__}: {error}"
+        )
+
     voice_commands = queue.Queue()
     _STOP_EVENT.clear()
     pc_agent.safety.resume()
@@ -1044,9 +1075,11 @@ def run_assistant(
                 source = item[0]
                 text = item[1]
                 mode = item[2] if len(item) > 2 else mode
+                on_reply = item[3] if len(item) > 3 else None
             except queue.Empty:
                 try:
                     source, text = voice_commands.get(timeout=0.1)
+                    on_reply = None
                 except queue.Empty:
                     set_status("listening")
                     continue
@@ -1089,6 +1122,7 @@ def run_assistant(
                     ),
                     source=source,
                     mode=mode,
+                    on_reply=on_reply,
                 )
                 if not should_continue:
                     stop_listening.set()
@@ -1108,6 +1142,12 @@ def run_assistant(
                 set_status("listening")
     finally:
         stop_listening.set()
+        try:
+            from app import telegram_bot
+
+            telegram_bot.stop()
+        except Exception:
+            pass
         try:
             pc_agent.safety.stop()
         except Exception:

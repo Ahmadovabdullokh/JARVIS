@@ -1,5 +1,5 @@
 ﻿# Показывает адрес и токен для подключения мобильного приложения.
-# Требует запущенных start_remote.ps1 и start_tunnel.ps1.
+# Требует запущенного start_remote.ps1 (туннель — по желанию).
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot\..
 
@@ -11,16 +11,18 @@ $publicUrl = $null
 if (Test-Path $publicFile) {
     $publicUrl = (Get-Content $publicFile -Raw | ConvertFrom-Json).url
 }
-if (-not $publicUrl -and (Test-Path $statusFile)) {
-    $local = (Get-Content $statusFile -Raw | ConvertFrom-Json).url
-    Write-Host "Публичный туннель не найден (data\remote_url.json)."
-    Write-Host "Запущен только локальный сервер: $local"
-    exit 0
+$localUrl = $null
+$lanUrl = $null
+if (Test-Path $statusFile) {
+    $status = Get-Content $statusFile -Raw | ConvertFrom-Json
+    $localUrl = $status.url
+    if ($status.PSObject.Properties.Name -contains "lan_url") {
+        $lanUrl = $status.lan_url
+    }
 }
-if (-not $publicUrl) {
-    Write-Host "Ничего не запущено. Сначала:"
+if (-not $publicUrl -and -not $lanUrl) {
+    Write-Host "Сервер не запущен. Сначала:"
     Write-Host "  scripts\start_remote.ps1"
-    Write-Host "  scripts\start_tunnel.ps1"
     exit 1
 }
 
@@ -39,8 +41,17 @@ Write-Host ""
 Write-Host "==============================================="
 Write-Host " JARVIS Remote — данные для приложения"
 Write-Host "==============================================="
-Write-Host " Адрес сервера (введите в приложении):"
-Write-Host "   $publicUrl"
+if ($lanUrl) {
+    Write-Host " Домашний Wi-Fi (телефон в той же сети):"
+    Write-Host "   $lanUrl"
+    Write-Host ""
+}
+if ($publicUrl) {
+    Write-Host " Через интернет (туннель):"
+    Write-Host "   $publicUrl"
+    Write-Host ""
+}
+Write-Host " Локально на ПК: $localUrl"
 Write-Host ""
 Write-Host " Токен:"
 Write-Host "   $token"

@@ -479,11 +479,27 @@ Python 3.10/3.11/3.12/3.13, ruff, mypy, coverage (порог 50%) и
 валидация, атомарное сохранение) и `app/paths.py` (единый `BASE_DIR`
 и каталоги данных).
 
+## Быстрый запуск всего
+
+Одна команда из корня проекта запускает backend, HUD, локальный
+remote-сервер для телефона по Wi-Fi и Telegram-бота, а при
+подключённом по USB телефоне ещё и обновляет/открывает APK:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_all.ps1
+```
+
+Полезные варианты: `-NoHud` (без окна на ПК), `-NoPhone` (не трогать
+телефон), `-Tunnel` (дополнительно поднять Cloudflare-туннель).
+Адрес для телефона и токен скрипт печатает в конце; остановить —
+`Stop-Process -Id <PID>`.
+
 ## Мобильный доступ (APK-пульт)
 
 JARVIS можно использовать с телефона: Android-приложение
-(`android/`, собирается в WebView-обёртку) подключается к тому же
-HUD по HTTPS-туннелю. ПК-версия при этом работает как обычно.
+(`android/`) — это отдельный нативный пульт (чат, голосовой ввод,
+задачи, журнал), а не WebView-ссылка на HUD. Оно подключается к
+тому же backend по HTTPS-туннелю, ПК-версия работает как обычно.
 
 Запуск удалённого режима на ПК:
 
@@ -516,26 +532,48 @@ scripts\remote_info.ps1       # покажет адрес и токен для �
   `scripts/start_tunnel.ps1` — запасной вариант на Pinggy.
   Публичный URL пишется в `data/remote_url.json`.
 - В приложении ввести «Адрес сервера» (из remote_info.ps1) и
-  «Токен». После этого открывается тот же интерфейс JARVIS:
-  чат, задачи, журнал, настройки.
-- Голосовой ввод слушает микрофон ПК; кнопка MIC в чате отправляет
-  запись с микрофона телефона на `/stt`.
+  «Токен» — открывается нативный экран JARVIS с чатом.
+- Для чата с телефона нужен доступ к `send_message`: пропишите
+  `remote.allowed_methods` (безопасный вариант, `read_only` при этом
+  игнорируется) или `remote.read_only: false`:
+  ```json
+  "remote": {
+      "read_only": true,
+      "allowed_methods": [
+          "bootstrap", "client_ready", "client_error", "poll",
+          "send_message", "stop", "set_mode", "get_catalog",
+          "get_journal", "get_audit", "cancel_task", "run_doctor"
+      ]
+  }
+  ```
+  Политика перечитывается на каждом RPC-запросе, перезапуск не нужен.
+- Голосовой ввод: кнопка MIC пишет звук с микрофона телефона и
+  отправляет его на `/stt` (ffmpeg → Groq Whisper); распознанный
+  текст попадает в поле ввода.
 - В Android-приложении: foreground-сервис держит уведомление
-  «JARVIS: онлайн» и проверяет `/health`, WebView сам переподключается
-  при обрыве, микрофон разрешён для голосового ввода.
+  «JARVIS: онлайн» и проверяет `/health`, чат автоматически
+  переподключается при обрыве (баннер сверху), долгое нажатие на
+  сообщение копирует текст, меню «⋮» — задачи, журнал, диагностика.
 - UI — PWA: `ui/manifest.webmanifest` + `ui/sw.js` кэшируют
   app-shell, поэтому HUD можно «добавить на главный экран»
   браузера и использовать без APK.
-- Уведомления в Telegram о фоновых задачах: `notifications.telegram`
-  в config.json (креды — `JARVIS_TELEGRAM_BOT_TOKEN` /
-  `JARVIS_TELEGRAM_CHAT_ID` или `integrations.telegram_*`).
+- Уведомления в Telegram: `notifications.telegram` в config.json
+  (креды — `JARVIS_TELEGRAM_BOT_TOKEN` / `JARVIS_TELEGRAM_CHAT_ID`
+  или `integrations.telegram_*`). Если `chat_id` пуст, JARVIS
+  определит его сам после первого `/start` у бота. Проверка:
+  ```powershell
+  .\.venv\Scripts\python.exe -m app.notifier --enable --test
+  ```
 
 Сборка APK:
 
 ```powershell
 cd android
-<gradle> assembleDebug   # результат: app\build\outputs\apk\debug\app-debug.apk
+& "$env:USERPROFILE\gradle-8.9\bin\gradle.bat" assembleDebug
+# результат: app\build\outputs\apk\debug\app-debug.apk
+adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 Нужны JDK 17 и Android SDK (platform 34, build-tools 34.0.0);
-`sdk.dir` указывается в `android/local.properties`.
+`sdk.dir` указывается в `android/local.properties`. Диагностика
+голосов Edge TTS: `.\.venv\Scripts\python.exe scripts\tts_test.py`.

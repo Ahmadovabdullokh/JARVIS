@@ -110,7 +110,8 @@
     "remote": {
         "token": "",
         "read_only": true,
-        "allowed_methods": []
+        "allowed_methods": [],
+        "host": "127.0.0.1"
     },
     "tools": {
         "enabled_categories": [],
@@ -120,7 +121,8 @@
         "telegram": false,
         "tasks": true,
         "errors": true,
-        "system": true
+        "system": true,
+        "telegram_control": true
     },
     "integrations": {
         "smtp_host": "",

@@ -16,6 +16,7 @@ import json
 import sys
 import time
 
+from app import config as config_module
 from app.logging import get_logger
 from app.paths import DATA_DIR, ensure_runtime_dirs
 from app.remote_server import RemoteServer
@@ -26,11 +27,11 @@ log = get_logger(__name__)
 STATUS_FILE = DATA_DIR / "remote_status.json"
 
 
-def _write_status(url):
+def _write_status(url, lan_url=""):
     try:
         STATUS_FILE.write_text(
             json.dumps(
-                {"url": url, "updated": time.time()},
+                {"url": url, "lan_url": lan_url, "updated": time.time()},
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -47,24 +48,30 @@ def main(argv=None):
     hud = "--no-hud" not in argv  # окно на ПК открываем по умолчанию
 
     bridge = UiBridge()
-    server = RemoteServer(bridge)
+    config = config_module.read_config_file()
+    remote = config.get("remote")
+    remote = remote if isinstance(remote, dict) else {}
+    host = str(remote.get("host") or "127.0.0.1").strip()
+    server = RemoteServer(bridge, host=host)
     server.start()
     bridge.start(start_backend=True)
 
     banner = (
         "\n"
         "========================================\n"
-        " J.A.R.V.I.S. — удалённый режим\n"
+        " J.A.R.V.I.S. — удалённый доступ\n"
         "========================================\n"
-        f" Локальный адрес: {server.url}\n"
-        f" Токен: config.json -> remote.token (см. scripts\\remote_info.ps1)\n"
-        f" Окно на ПК: {'да (--hud)' if hud else 'нет (--no-hud)'}\n"
-        " Туннель: запустите scripts\\start_tunnel.ps1\n"
+        f" локальный адрес: {server.url}\n"
+        f" для телефона по Wi-Fi: {server.lan_url or 'выключен'}\n"
+        f" токен: config.json -> remote.token "
+        f"(см. scripts\\remote_info.ps1)\n"
+        f" HUD при запуске: {'да (--hud)' if hud else 'нет (--no-hud)'}\n"
+        " туннель: scripts\\start_tunnel_cf.ps1\n"
         "========================================\n"
     )
     print(banner, flush=True)
     log.info("[REMOTE LAUNCHER] %s", banner.replace("\n", " | "))
-    _write_status(server.url)
+    _write_status(server.url, server.lan_url)
 
     if hud:
         try:

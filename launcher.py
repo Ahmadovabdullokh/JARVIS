@@ -1795,7 +1795,7 @@ class JarvisWindow:
             self._append_journal(f"Не удалось открыть аудит: {error}")
 
     def stop_from_ui(self):
-        stop_assistant()
+        stop_assistant(emergency=True)
         self._append_journal("Отправлена команда аварийной остановки.")
         self._append_system_log(
             "Аварийная остановка: инструменты и фоновые задачи остановлены."
