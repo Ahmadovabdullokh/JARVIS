@@ -57,6 +57,7 @@ def main(argv=None):
         " J.A.R.V.I.S. — удалённый режим\n"
         "========================================\n"
         f" Локальный адрес: {server.url}\n"
+        f" Токен: config.json -> remote.token (см. scripts\\remote_info.ps1)\n"
         f" Окно на ПК: {'да (--hud)' if hud else 'нет (--no-hud)'}\n"
         " Туннель: запустите scripts\\start_tunnel.ps1\n"
         "========================================\n"

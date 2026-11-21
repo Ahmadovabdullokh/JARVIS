@@ -7,8 +7,10 @@
 
 Авторизация — токеном ``remote.token`` из ``config.json``
 (генерируется при первом запуске) или переменной
-``JARVIS_REMOTE_TOKEN``. Токен передаётся в query ``?token=...``
-и проверяется на каждом запросе, включая статику.
+``JARVIS_REMOTE_TOKEN``. Клиент обменивает токен на HttpOnly-cookie
+через ``POST /login``; в URL токен больше не передаётся. Для
+совместимости ``GET /?token=...`` один раз ставит cookie и
+редиректит на чистый ``/``.
 """
 
 import json
@@ -17,6 +19,7 @@ import os
 import secrets
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -65,45 +68,147 @@ READ_ONLY_METHODS = {
     "get_audit",
 }
 
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J.A.R.V.I.S. — вход</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center;
+         justify-content:center; background:#05080f; color:#cfe8ff;
+         font-family:Segoe UI,Arial,sans-serif; }
+  form { display:flex; flex-direction:column; gap:12px; width:min(320px,85vw);
+         padding:24px; border:1px solid #1b3a5c; border-radius:12px;
+         background:#0a1220; }
+  h1 { margin:0 0 4px; font-size:18px; letter-spacing:2px; }
+  input { padding:10px 12px; border-radius:8px; border:1px solid #1b3a5c;
+          background:#05080f; color:#cfe8ff; }
+  button { padding:10px 12px; border-radius:8px; border:0; cursor:pointer;
+           background:#1f6feb; color:#fff; font-weight:600; }
+  p { margin:0; font-size:12px; color:#6f8ca8; }
+  .err { color:#ff6b6b; }
+</style>
+</head>
+<body>
+<form id="login">
+  <h1>J.A.R.V.I.S.</h1>
+  <p>Введите токен удалённого доступа из config.json.</p>
+  <input id="token" type="password" autocomplete="current-password"
+         placeholder="Токен" required>
+  <button type="submit">Войти</button>
+  <p id="status"></p>
+</form>
+<script>
+document.getElementById('login').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.getElementById('status');
+  status.textContent = '';
+  try {
+    const response = await fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: document.getElementById('token').value}),
+    });
+    if (response.ok) {
+      location.reload();
+    } else {
+      status.textContent = 'Неверный токен.';
+      status.className = 'err';
+    }
+  } catch (error) {
+    status.textContent = 'Сервер недоступен.';
+    status.className = 'err';
+  }
+});
+</script>
+</body>
+</html>
+"""
+
 # Защита от перебора токена: после AUTH_FAIL_LIMIT неудач с одного IP
 # адрес получает бан на AUTH_BAN_SECONDS секунд.
 AUTH_FAIL_LIMIT = 10
 AUTH_BAN_SECONDS = 120.0
-_auth_failures = {}
+AUTH_FAILURE_TTL = 3600.0
+AUTH_MAX_TRACKED = 4096
+
+# X-Forwarded-For учитывается только когда запрос пришёл от
+# доверенного прокси (loopback или адреса из JARVIS_TRUSTED_PROXIES).
+DEFAULT_TRUSTED_PROXIES = {"127.0.0.1", "::1"}
+
+_auth_failures = {}  # ip -> [fails, banned_until, last_seen]
 _auth_lock = threading.Lock()
 _started_at = time.monotonic()
 
 
+def _trusted_proxies():
+    proxies = set(DEFAULT_TRUSTED_PROXIES)
+    extra = os.environ.get("JARVIS_TRUSTED_PROXIES", "")
+    proxies.update(part.strip() for part in extra.split(",") if part.strip())
+    return proxies
+
+
 def _client_ip(handler):
+    peer = handler.client_address[0] if handler.client_address else ""
     forwarded = handler.headers.get("X-Forwarded-For") or ""
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return handler.client_address[0] if handler.client_address else ""
+    if forwarded and peer in _trusted_proxies():
+        chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if chain:
+            return chain[0]
+    return peer
+
+
+def _prune_auth_failures(now):
+    stale = [
+        ip
+        for ip, state in _auth_failures.items()
+        if now - state[2] > AUTH_FAILURE_TTL
+    ]
+    for ip in stale:
+        _auth_failures.pop(ip, None)
 
 
 def _auth_banned(ip):
+    now = time.monotonic()
     with _auth_lock:
-        fails, banned_until = _auth_failures.get(ip, (0, 0.0))
-        if time.monotonic() < banned_until:
+        state = _auth_failures.get(ip)
+        if state is None:
+            return False
+        _, banned_until, last_seen = state
+        if now < banned_until:
+            state[2] = now
             return True
-        if time.monotonic() - banned_until > AUTH_BAN_SECONDS and fails:
+        if banned_until:
+            # Срок бана истёк — счётчик начинается заново.
+            _auth_failures.pop(ip, None)
+            return False
+        if now - last_seen > AUTH_FAILURE_TTL:
             _auth_failures.pop(ip, None)
         return False
 
 
 def _auth_failed(ip):
+    now = time.monotonic()
     with _auth_lock:
-        fails, _ = _auth_failures.get(ip, (0, 0.0))
-        fails += 1
+        state = _auth_failures.get(ip)
+        fails = (state[0] if state else 0) + 1
         banned_until = (
-            time.monotonic() + AUTH_BAN_SECONDS
+            now + AUTH_BAN_SECONDS
             if fails >= AUTH_FAIL_LIMIT
             else 0.0
         )
-        _auth_failures[ip] = (fails, banned_until)
+        _auth_failures[ip] = [fails, banned_until, now]
+        if len(_auth_failures) > AUTH_MAX_TRACKED:
+            _prune_auth_failures(now)
         if banned_until:
-            log.info(f"[REMOTE] IP {ip} забанен на {AUTH_BAN_SECONDS:.0f} c "
-                     f"после {fails} неудачных попыток авторизации.")
+            log.warning(
+                "[REMOTE] IP %s забанен на %.0f c после %d "
+                "неудачных попыток авторизации.",
+                ip,
+                AUTH_BAN_SECONDS,
+                fails,
+            )
 
 
 def _auth_ok(ip):
@@ -138,7 +243,8 @@ def _remote_policy():
 
     remote.read_only: true — только методы наблюдения (READ_ONLY_METHODS).
     remote.allowed_methods: ["poll", "send_message", ...] — явный whitelist;
-    если задан, заменяет read_only.
+    если задан, заменяет read_only. По умолчанию доступ read-only:
+    полный набор методов включается только явным ``read_only: false``.
     """
 
     config = config_module.read_config_file()
@@ -148,9 +254,9 @@ def _remote_policy():
     allowed = remote.get("allowed_methods")
     if isinstance(allowed, list) and allowed:
         return {str(m).strip() for m in allowed if str(m).strip()}
-    if remote.get("read_only"):
+    if remote.get("read_only", True):
         return set(READ_ONLY_METHODS)
-    return None  # без ограничений
+    return None  # явное remote.read_only: false — без ограничений
 
 
 def make_handler(bridge, token, allowed_methods=None):
@@ -169,19 +275,38 @@ def make_handler(bridge, token, allowed_methods=None):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self._send_cookie_header()
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_cookie_header(self):
-            # Браузер сохраняет токен в cookie, чтобы подресурсы
-            # (css/js) грузились без ?token= в URL.
-            if getattr(self, "_set_cookie", False):
-                self.send_header(
-                    "Set-Cookie",
-                    f"jarvis_token={self._token_value}; Path=/; SameSite=Lax",
-                )
-                self._set_cookie = False
+        def _send_html(self, body, status=200):
+            payload = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def _is_secure(self):
+            proto = self.headers.get("X-Forwarded-Proto") or ""
+            return proto.split(",")[0].strip().lower() == "https"
+
+        def _cookie_header(self, value):
+            flags = "Path=/; HttpOnly; SameSite=Strict"
+            if self._is_secure():
+                flags += "; Secure"
+            return f"jarvis_token={value}; {flags}"
+
+        def _send_login_redirect(self, token_value):
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", self._cookie_header(token_value))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
 
         def _send_file(self, path):
             try:
@@ -200,7 +325,7 @@ def make_handler(bridge, token, allowed_methods=None):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self._send_cookie_header()
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 
@@ -210,33 +335,69 @@ def make_handler(bridge, token, allowed_methods=None):
             )
 
         def _authorized(self):
-            self._set_cookie = False
             ip = _client_ip(self)
             if _auth_banned(ip):
                 return False
-            parsed = urlparse(self.path)
-            query = parse_qs(parsed.query)
-            supplied = (query.get("token") or [""])[0]
-            if self._token_matches(supplied):
-                self._set_cookie = True
-                self._token_value = supplied
-                _auth_ok(ip)
-                return True
             auth = self.headers.get("Authorization") or ""
             if auth.lower().startswith("bearer "):
                 if self._token_matches(auth[7:].strip()):
                     _auth_ok(ip)
                     return True
-            cookie = self.headers.get("Cookie") or ""
-            for part in cookie.split(";"):
-                part = part.strip()
-                if part.startswith("jarvis_token="):
-                    value = part.split("=", 1)[1]
-                    if self._token_matches(value):
-                        _auth_ok(ip)
-                        return True
+            cookie = SimpleCookie(self.headers.get("Cookie") or "")
+            morsel = cookie.get("jarvis_token")
+            if morsel is not None and self._token_matches(morsel.value):
+                _auth_ok(ip)
+                return True
             _auth_failed(ip)
             return False
+
+        def _login_token(self, body):
+            text = body.decode("utf-8", "replace")
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            if "application/json" in ctype:
+                try:
+                    data = json.loads(text)
+                except ValueError:
+                    return ""
+                if isinstance(data, dict):
+                    return str(data.get("token") or "").strip()
+                return ""
+            form = parse_qs(text)
+            return (form.get("token") or [""])[0].strip()
+
+        def _handle_login(self):
+            ip = _client_ip(self)
+            if _auth_banned(ip):
+                self._reject()
+                return
+            body = self._read_body(MAX_BODY)
+            if body is None:
+                self._send_json({"ok": False, "error": "bad request"}, 400)
+                return
+            supplied = self._login_token(body)
+            if self._token_matches(supplied):
+                _auth_ok(ip)
+                self.send_response(204)
+                self.send_header("Set-Cookie", self._cookie_header(supplied))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.end_headers()
+                return
+            _auth_failed(ip)
+            self._send_json({"ok": False, "error": "unauthorized"}, 401)
+
+        def _login_via_query(self, query):
+            ip = _client_ip(self)
+            if _auth_banned(ip):
+                self._reject()
+                return
+            supplied = (query.get("token") or [""])[0]
+            if self._token_matches(supplied):
+                _auth_ok(ip)
+                self._send_login_redirect(supplied)
+                return
+            _auth_failed(ip)
+            self._reject()
 
         def _reject(self):
             self._send_json({"ok": False, "error": "unauthorized"}, 401)
@@ -257,7 +418,8 @@ def make_handler(bridge, token, allowed_methods=None):
             return candidate
 
         def do_GET(self):
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/health":
                 # Открытый healthcheck для туннеля/мониторинга:
                 # отдаёт только статус, без секретов и данных.
@@ -271,8 +433,15 @@ def make_handler(bridge, token, allowed_methods=None):
                     }
                 )
                 return
+            query = parse_qs(parsed.query)
+            if "token" in query and path in {"/", "/index.html"}:
+                self._login_via_query(query)
+                return
             if not self._authorized():
-                self._reject()
+                if path in {"/", "/index.html"}:
+                    self._send_html(LOGIN_PAGE)
+                else:
+                    self._reject()
                 return
             path = self._safe_static_path(path)
             if path is None:
@@ -346,10 +515,13 @@ def make_handler(bridge, token, allowed_methods=None):
             return (text or ""), None
 
         def do_POST(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/login":
+                self._handle_login()
+                return
             if not self._authorized():
                 self._reject()
                 return
-            parsed = urlparse(self.path)
             if parsed.path == "/stt":
                 body = self._read_body(MAX_AUDIO_BODY)
                 if body is None:
@@ -433,11 +605,13 @@ class RemoteServer:
         self.allowed_methods = _remote_policy()
         handler = make_handler(bridge, self.token, self.allowed_methods)
         self._server = ThreadingHTTPServer((host, port), handler)
+        # Порт 0 означает «любой свободный»: фиксируем фактический.
+        self.port = self._server.server_address[1]
         self._thread = None
 
     @property
     def url(self):
-        return f"http://{self.host}:{self.port}/?token={self.token}"
+        return f"http://{self.host}:{self.port}/"
 
     def start(self):
         if self._thread is not None:
@@ -448,10 +622,14 @@ class RemoteServer:
             daemon=True,
         )
         self._thread.start()
-        log.info(f"[REMOTE] Сервер удалённого доступа: {self.url}")
+        log.info("[REMOTE] Сервер удалённого доступа: %s", self.url)
 
     def stop(self):
         try:
             self._server.shutdown()
+        except Exception:
+            pass
+        try:
+            self._server.server_close()
         except Exception:
             pass
