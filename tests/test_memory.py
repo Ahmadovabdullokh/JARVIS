@@ -51,6 +51,24 @@ class MemoryTests(unittest.TestCase):
         restored = Memory(path=self.path)
         self.assertEqual(restored.facts(), ["Тестовый факт"])
 
+    def test_forget_removes_matching_facts(self):
+        self.memory.remember("Любимый браузер — Chrome")
+        self.memory.remember("Любимый цвет — синий")
+
+        removed = self.memory.forget("браузер")
+
+        self.assertEqual(removed, ["Любимый браузер — Chrome"])
+        self.assertEqual(
+            self.memory.facts(),
+            ["Любимый цвет — синий"],
+        )
+
+    def test_forget_without_match_keeps_facts(self):
+        self.memory.remember("Любимый браузер — Chrome")
+
+        self.assertEqual(self.memory.forget("квантовая физика"), [])
+        self.assertEqual(len(self.memory.facts()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

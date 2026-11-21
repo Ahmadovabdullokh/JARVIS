@@ -13,3 +13,19 @@ dist/
 dist_installer/
 .pytest_cache/
 .ruff_cache/
+
+# Android build artifacts
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+*.apk
+
+# Android signing secrets
+keystore.properties
+*.jks
+*.keystore
+
+# Bundled third-party binaries (download locally, do not commit)
+tools/*.exe
+tools/*.dll

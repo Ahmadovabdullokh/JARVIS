@@ -83,9 +83,9 @@ def test_poll_caches_catalog(monkeypatch):
     monkeypatch.setattr(
         ui_bridge,
         "drain_ui_events",
-        lambda: [
-            ("command_catalog", catalog),
-            ("assistant", "Готово"),
+        lambda after_seq=0: [
+            (1, "command_catalog", catalog),
+            (2, "assistant", "Готово"),
         ],
     )
     bridge = UiBridge()

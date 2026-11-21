@@ -13,7 +13,12 @@
 - Языковая модель и инструменты: DeepSeek `deepseek-chat`.
 - Агент по коду: DeepSeek с инструментами чтения/записи файлов,
   git, запуска Python/PowerShell и тестов.
-- Синтез речи: Edge TTS (облако), опционально `pyttsx3` как офлайн-fallback.
+- Синтез речи: Edge TTS (облако) с потоковой озвучкой по предложениям
+  (первая фраза звучит сразу), выбором устройства вывода
+  (`tts_output_device`) и прерыванием речи голосом
+  (`voice_barge_in`, для наушников), опционально `pyttsx3` как
+  офлайн-fallback. Ответы на текст тоже озвучиваются
+  (`speak_text`, отключается в настройках).
 - Управление компьютером: PyAutoGUI, PyGetWindow, psutil, pywin32,
   pynput, pywinauto.
 - Инструменты: реестр из 404 операции в 22 категориях: system, files,
@@ -62,10 +67,12 @@
   и на вкладке НАСТРОЙКИ.
 - Интерфейс: по умолчанию новый HUD на WebView2 через `pywebview`
   (EdgeChromium-бэкенд) — frameless-окно, арк-реактор на Canvas с
-  анимацией 60 fps, HUD-стилизация, телеметрия, чат, разделы ЧАТ,
-  АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ и НАСТРОЙКИ, поиск команд (`Ctrl+K`),
-  tray-иконка и быстрые действия.
+  анимацией 60 fps, HUD-стилизация, телеметрия, чат со стримингом
+  ответов LLM, разделы ЧАТ, АГЕНТ, ЗАДАЧИ, КОМАНДЫ, ЖУРНАЛ и
+  НАСТРОЙКИ, поиск команд (`Ctrl+K`), tray-иконка и быстрые действия.
   Старый Tkinter HUD сохранён как fallback: `scripts\start.ps1 -Tk`.
+- LLM: circuit breaker — после серии сбоев провайдер отключается
+  на 5 минут и трафик идёт на резервный эндпоинт.
   WebView2 уже есть в Windows 11; на Windows 10 может потребоваться
   Evergreen WebView2 Runtime. Для моста используется `pywebview` +
   `pythonnet` (CoreCLR); `launcher_web.py` генерирует
@@ -471,3 +478,60 @@ ruff, mypy, coverage и `pip-audit`: `.github/workflows/tests.yml`.
 Конфигурация и пути теперь централизованы: `app/config.py` (загрузка,
 валидация, атомарное сохранение) и `app/paths.py` (единый `BASE_DIR`
 и каталоги данных).
+
+## Мобильный доступ (APK-пульт)
+
+JARVIS можно использовать с телефона: Android-приложение
+(`android/`, собирается в WebView-обёртку) подключается к тому же
+HUD по HTTPS-туннелю. ПК-версия при этом работает как обычно.
+
+Запуск удалённого режима на ПК:
+
+```powershell
+scripts\start_remote.ps1      # backend + HTTP-сервер на 127.0.0.1:8765
+scripts\start_tunnel_cf.ps1   # HTTPS-туннель через Cloudflare (рекомендуется)
+scripts\start_tunnel.ps1      # HTTPS-туннель через Pinggy (запасной вариант)
+scripts\remote_info.ps1       # покажет адрес и токен для приложения
+```
+
+- `app/remote_server.py` отдаёт статику `ui/` и RPC `POST /rpc` —
+  тот же протокол, что у pywebview. Слушает только localhost.
+- Токен доступа хранится в `config.json` → `remote.token`
+  (создаётся автоматически, `secrets.token_urlsafe(24)`)
+  или задаётся `JARVIS_REMOTE_TOKEN`. Принимается в query `?token=`,
+  заголовке `Authorization: Bearer` и cookie `jarvis_token`.
+- Защита: после 10 неудачных попыток авторизации IP блокируется
+  на 2 минуты; `remote.read_only: true` или `remote.allowed_methods`
+  в config.json ограничивают набор RPC-методов.
+- `GET /health` — открытый healthcheck (статус и uptime, без данных).
+- `POST /stt` — распознавание аудио с телефона (webm/ogg/wav/mp3
+  через ffmpeg → Groq Whisper), для кнопки MIC в веб-интерфейсе.
+- Туннель: `scripts/start_tunnel_cf.ps1` использует cloudflared
+  (`tools/cloudflared.exe`, quick tunnel или named tunnel —
+  постоянный URL настраивается в `remote.tunnel_name`).
+  `scripts/start_tunnel.ps1` — запасной вариант на Pinggy.
+  Публичный URL пишется в `data/remote_url.json`.
+- В приложении ввести «Адрес сервера» (из remote_info.ps1) и
+  «Токен». После этого открывается тот же интерфейс JARVIS:
+  чат, задачи, журнал, настройки.
+- Голосовой ввод слушает микрофон ПК; кнопка MIC в чате отправляет
+  запись с микрофона телефона на `/stt`.
+- В Android-приложении: foreground-сервис держит уведомление
+  «JARVIS: онлайн» и проверяет `/health`, WebView сам переподключается
+  при обрыве, микрофон разрешён для голосового ввода.
+- UI — PWA: `ui/manifest.webmanifest` + `ui/sw.js` кэшируют
+  app-shell, поэтому HUD можно «добавить на главный экран»
+  браузера и использовать без APK.
+- Уведомления в Telegram о фоновых задачах: `notifications.telegram`
+  в config.json (креды — `JARVIS_TELEGRAM_BOT_TOKEN` /
+  `JARVIS_TELEGRAM_CHAT_ID` или `integrations.telegram_*`).
+
+Сборка APK:
+
+```powershell
+cd android
+<gradle> assembleDebug   # результат: app\build\outputs\apk\debug\app-debug.apk
+```
+
+Нужны JDK 17 и Android SDK (platform 34, build-tools 34.0.0);
+`sdk.dir` указывается в `android/local.properties`.

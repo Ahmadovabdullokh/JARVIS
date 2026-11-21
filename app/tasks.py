@@ -5,6 +5,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from app import notifier
 from app.paths import DATA_DIR
 
 
@@ -123,26 +124,41 @@ class TaskManager:
     def start(self, task_id):
         return self.update(task_id, status="running")
 
+    def _notify_if_background(self, task, status, detail=""):
+        if task and task.get("kind") == "background":
+            try:
+                notifier.notify_task(
+                    task.get("title", "Задача"), status, detail
+                )
+            except Exception:
+                pass
+
     def complete(self, task_id, result=""):
-        return self.update(
+        task = self.update(
             task_id,
             status="done",
             result=str(result or ""),
         )
+        self._notify_if_background(task, "done", result)
+        return task
 
     def fail(self, task_id, error=""):
-        return self.update(
+        task = self.update(
             task_id,
             status="failed",
             error=str(error or ""),
         )
+        self._notify_if_background(task, "failed", error)
+        return task
 
     def cancel(self, task_id):
         task_id = str(task_id)
         future = self._futures.get(task_id)
         if future is not None:
             future.cancel()
-        return self.update(task_id, status="cancelled")
+        task = self.update(task_id, status="cancelled")
+        self._notify_if_background(task, "cancelled")
+        return task
 
     def cancel_all(self):
         with self._lock:

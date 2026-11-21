@@ -1,18 +1,15 @@
 {
     "jarvis_name": "JARVIS",
-
     "wake_words": [
         "джарвис",
         "jarvis",
         "джарвиз",
         "дарвис"
     ],
-
     "require_wake_word": false,
-    "wake_word_cooldown": 1.5,
+    "wake_word_cooldown": 1.0,
     "wake_ack": "Слушаю, сэр.",
-    "follow_up_seconds": 8.0,
-
+    "follow_up_seconds": 6.0,
     "persona": {
         "name": "JARVIS",
         "address": "сэр",
@@ -20,36 +17,31 @@
         "verbosity": "concise",
         "language": "ru"
     },
-
     "groq_api_key": "",
-    "groq_model": "whisper-large-v3-turbo",
+    "groq_model": "whisper-large-v3",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-chat",
     "stt_prompt": "Джарвис, открой браузер. Джарвис, статус систем. Джарвис, VS Code. Джарвис, Copilot. Джарвис, который час.",
     "stt_language": "ru",
     "stt_noise_adapt_k": 3.0,
     "stt_noise_max_ratio": 8.0,
-
     "chat_mode": "tasks",
     "transcript_preview": false,
-
+    "speak_text": true,
+    "voice_barge_in": false,
     "audio_sample_rate": 16000,
     "silence_threshold": 0.005,
     "min_speech_seconds": 0.25,
     "max_speech_seconds": 12.0,
-    "silence_duration": 0.7,
-    "initial_silence_seconds": 1.2,
-
+    "silence_duration": 0.55,
+    "initial_silence_seconds": 1.0,
     "use_llm": true,
-
     "llm_model": "deepseek-chat",
     "vision_model": "qwen/qwen3.8-27b",
     "llm_history_size": 20,
-
     "stt_local_model": "",
     "stt_local_device": "cpu",
     "stt_local_compute_type": "int8",
-
     "llm": {
         "provider": "deepseek",
         "base_url": "",
@@ -66,9 +58,7 @@
         "request_timeout": 180,
         "session_history": 20
     },
-
     "memory_size": 50,
-
     "tts_rate": 185,
     "tts_voice": "en-US-AndrewMultilingualNeural",
     "tts_pitch": "-8Hz",
@@ -76,7 +66,8 @@
         "en-US-AndrewMultilingualNeural"
     ],
     "tts_offline_fallback": false,
-
+    "tts_output_device": "",
+    "tts_stream_sentences": true,
     "agent": {
         "autonomy": "balanced",
         "max_iterations": 12,
@@ -87,7 +78,6 @@
         "code_tools_per_request": 28,
         "category_planning": true
     },
-
     "safety": {
         "autonomy": "balanced",
         "confirm_destructive": true,
@@ -103,22 +93,30 @@
         "session_allow": [],
         "session_deny": []
     },
-
     "code": {
         "enabled": true,
         "backend": "deepseek",
         "project": "",
         "max_iterations": 60,
-        "cli_args": ["--allow-all-tools"],
+        "max_tokens": 8000,
+        "parallel_tool_calls": true,
+        "compact_max_chars": 24000,
+        "cli_args": [
+            "--allow-all-tools"
+        ],
         "timeout": 900,
         "fallback": true
     },
-
     "tools": {
         "enabled_categories": [],
         "disabled_tools": []
     },
-
+    "notifications": {
+        "telegram": false,
+        "tasks": true,
+        "errors": true,
+        "system": true
+    },
     "integrations": {
         "smtp_host": "",
         "smtp_port": 587,

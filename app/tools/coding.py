@@ -280,6 +280,7 @@ def register(registry):
             "properties": {
                 "pattern": {"type": "string"},
                 "project": {"type": "string"},
+                "path": {"type": "string"},
                 "include": {"type": "string"},
                 "case_sensitive": {"type": "boolean"},
                 "context": {"type": "integer"},
@@ -293,12 +294,17 @@ def register(registry):
     def code_grep(
         pattern,
         project=None,
+        path=None,
         include="*",
         case_sensitive=False,
         context=0,
         limit=100,
     ):
         root = project_path(project)
+        if str(path or "").strip() not in {"", ".", "./"}:
+            root = resolve_path(path, base=root, must_exist=True)
+            if not root.is_dir():
+                root = root.parent
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(str(pattern or ""), flags)
@@ -358,10 +364,25 @@ def register(registry):
         )
         if text is None:
             return error
-        return f"Файл: {_relative(target, root)}\n" + _line_numbered(
-            text,
-            offset=offset,
-            limit=limit,
+        total_lines = len(text.splitlines())
+        if total_lines == 0:
+            return f"Файл: {_relative(target, root)}\n(файл пуст)"
+        requested = max(1, int(offset or 1))
+        note = ""
+        if requested > total_lines:
+            requested = max(
+                1,
+                total_lines - max(1, int(limit or 600)) + 1,
+            )
+            note = (
+                f"Внимание: offset={offset} больше числа строк "
+                f"({total_lines}); показан конец файла.\n"
+            )
+        return (
+            f"Файл: {_relative(target, root)} "
+            f"({total_lines} строк)\n"
+            + note
+            + _line_numbered(text, offset=requested, limit=limit)
         )
 
     @registry.tool(
@@ -750,6 +771,7 @@ def register(registry):
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
+                "path": {"type": "string"},
                 "timeout": {"type": "integer"},
             },
             "required": [],
@@ -759,9 +781,22 @@ def register(registry):
         timeout=1200.0,
         tags=("код", "тесты", "pytest", "unittest"),
     )
-    def code_test(project=None, timeout=900):
+    def code_test(project=None, timeout=900, path=""):
         root = project_path(project)
-        if (root / "tests").is_dir() and _module_available("pytest"):
+        target = str(path or "").strip()
+        if target:
+            target_path = resolve_path(target, base=root, must_exist=True)
+            if (root / "tests").is_dir() and _module_available("pytest"):
+                command = [
+                    sys.executable, "-m", "pytest", "-q",
+                    str(target_path),
+                ]
+            else:
+                command = [
+                    sys.executable, "-m", "compileall", "-q",
+                    str(target_path),
+                ]
+        elif (root / "tests").is_dir() and _module_available("pytest"):
             command = [sys.executable, "-m", "pytest", "-q"]
         elif (root / "tests").is_dir():
             command = [
@@ -797,6 +832,7 @@ def register(registry):
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
+                "path": {"type": "string"},
                 "timeout": {"type": "integer"},
             },
             "required": [],
@@ -806,12 +842,15 @@ def register(registry):
         timeout=600.0,
         tags=("код", "lint", "ruff", "проверка"),
     )
-    def code_lint(project=None, timeout=300):
+    def code_lint(project=None, timeout=300, path="."):
         root = project_path(project)
+        target = str(path or ".").strip() or "."
         if _module_available("ruff"):
-            command = [sys.executable, "-m", "ruff", "check", "."]
+            command = [sys.executable, "-m", "ruff", "check", target]
         else:
-            command = [sys.executable, "-m", "compileall", "-q", "."]
+            command = [
+                sys.executable, "-m", "compileall", "-q", target,
+            ]
         result = run_command(
             command,
             timeout=max(20, min(int(timeout or 300), 1200)),
