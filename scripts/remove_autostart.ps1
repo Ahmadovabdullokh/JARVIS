@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
+
+Unregister-ScheduledTask -TaskName "JARVIS" -Confirm:$false -ErrorAction SilentlyContinue
+
 $Startup = [Environment]::GetFolderPath("Startup")
 $ShortcutPath = Join-Path $Startup "JARVIS.lnk"
-
 if (Test-Path -LiteralPath $ShortcutPath) {
     Remove-Item -LiteralPath $ShortcutPath -Force
     Write-Host "[JARVIS] Autostart removed: $ShortcutPath"
