@@ -1,0 +1,57 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Подпись release собирается, если рядом с проектом есть
+// keystore.properties (файл в .gitignore — секреты не коммитим):
+//   storeFile=..\\keystore\\jarvis-release.jks
+//   storePassword=...
+//   keyAlias=jarvis
+//   keyPassword=...
+// Сгенерировать: keytool -genkeypair -v -keystore jarvis-release.jks
+//   -alias jarvis -keyalg RSA -keysize 2048 -validity 10000
+// Без файла release-сборка остаётся неподписанной (debug-подпись
+// для локальной установки по-прежнему работает через assembleDebug).
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
+android {
+    namespace 'com.jarvis.remote'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.jarvis.remote"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
