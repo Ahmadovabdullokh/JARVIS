@@ -8,7 +8,7 @@ from app.tts import TTS, split_sentences
 class TTSTests(unittest.TestCase):
 
     def test_edge_failure_returns_false_without_local_fallback(self):
-        tts = TTS(rate=185)
+        tts = TTS(rate=185, offline_fallback=False)
 
         def fail(coroutine):
             coroutine.close()
@@ -63,6 +63,8 @@ class TTSTests(unittest.TestCase):
             [
                 "en-US-AndrewMultilingualNeural",
                 "en-US-AndrewNeural",
+                "ru-RU-DmitryNeural",
+                "en-US-GuyNeural",
             ],
         )
 
@@ -110,6 +112,9 @@ class TTSTests(unittest.TestCase):
                 "en-GB-RyanNeural",
             ],
         )
+
+    def test_offline_fallback_is_enabled_by_default(self):
+        self.assertTrue(TTS().offline_fallback)
 
     def test_successful_edge_speech_returns_true(self):
         tts = TTS()

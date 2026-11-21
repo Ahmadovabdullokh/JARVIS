@@ -15,6 +15,9 @@ log = get_logger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
+# Голоса Edge TTS на случай, если заданный в конфиге недоступен (403).
+FALLBACK_VOICES = ("ru-RU-DmitryNeural", "en-US-GuyNeural")
+
 
 def _hidden_window_kwargs():
     """Kwargs to spawn console subprocesses without a visible console window."""
@@ -57,7 +60,7 @@ class TTS:
         voice: str = "en-US-AndrewMultilingualNeural",
         pitch: str = "-8Hz",
         voices=None,
-        offline_fallback: bool = False,
+        offline_fallback: bool = True,
         output_device=None,
         stream_sentences: bool = True,
     ):
@@ -76,6 +79,9 @@ class TTS:
         for item in voices or []:
             item = str(item).strip()
             if item and item not in ordered:
+                ordered.append(item)
+        for item in FALLBACK_VOICES:
+            if item not in ordered:
                 ordered.append(item)
         self.voices = ordered
 
@@ -130,7 +136,12 @@ class TTS:
                 device=self._resolve_device(),
             ) as stream:
                 while not self._stop_event.is_set():
-                    data = process.stdout.read(4096)
+                    if process.stdout is None or process.stdout.closed:
+                        break
+                    try:
+                        data = process.stdout.read(4096)
+                    except (ValueError, OSError):
+                        break
 
                     if not data:
                         break
@@ -161,7 +172,7 @@ class TTS:
             self._process = process
         return process
 
-    def _close_process(self, process):
+    def _close_process(self, process, close_stdout=True):
         try:
             if process.stdin and not process.stdin.closed:
                 process.stdin.close()
@@ -174,11 +185,12 @@ class TTS:
                 process.kill()
             except Exception:
                 pass
-        try:
-            if process.stdout:
-                process.stdout.close()
-        except Exception:
-            pass
+        if close_stdout:
+            try:
+                if process.stdout and not process.stdout.closed:
+                    process.stdout.close()
+            except Exception:
+                pass
         with self._process_lock:
             if self._process is process:
                 self._process = None
@@ -218,21 +230,31 @@ class TTS:
                 try:
                     process.stdin.write(audio_data)
                     process.stdin.flush()
-                except (BrokenPipeError, OSError):
+                except (BrokenPipeError, OSError, ValueError):
                     break
 
         finally:
-            self._close_process(process)
+            self._close_process(process, close_stdout=False)
             player_thread.join(timeout=5)
+            try:
+                if process.stdout and not process.stdout.closed:
+                    process.stdout.close()
+            except Exception:
+                pass
 
-    async def _speak_async(self, text: str, voice: str):
-        if self.stream_sentences:
-            for sentence in split_sentences(text):
-                if self._stop_event.is_set():
-                    break
-                await self._stream_sentence(sentence, voice)
-        else:
-            await self._stream_sentence(text, voice)
+    async def _speak_async(self, text: str, voice: str, progress=None):
+        sentences = (
+            split_sentences(text) if self.stream_sentences else [text]
+        )
+        start = int((progress or {}).get("done", 0))
+        for index, sentence in enumerate(sentences):
+            if index < start:
+                continue
+            if self._stop_event.is_set():
+                break
+            await self._stream_sentence(sentence, voice)
+            if progress is not None:
+                progress["done"] = index + 1
 
     def stop(self):
         """Прерывает текущее воспроизведение (barge-in)."""
@@ -272,10 +294,11 @@ class TTS:
         self._stop_event.clear()
         log.info(f"[TTS] Говорю: {text}")
 
+        progress = {"done": 0}
         for voice in self.voices:
             try:
                 asyncio.run(
-                    self._speak_async(text, voice)
+                    self._speak_async(text, voice, progress)
                 )
                 if self._stop_event.is_set():
                     log.info("[TTS] Воспроизведение прервано.")
