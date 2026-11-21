@@ -13,6 +13,9 @@ dist/
 dist_installer/
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Android build artifacts
 android/.gradle/
