@@ -241,9 +241,15 @@ class LLMClient:
             if response.status_code == 429:
                 self.retry_after = self._parse_retry_after(response)
             if response.status_code == 413:
+                size = 0
+                try:
+                    body = response.request.body
+                    size = len(body) if body else 0
+                except Exception:
+                    size = 0
                 log.info(
                     f"[{label} ERROR] HTTP 413: "
-                    f"{response.text[:1000]}"
+                    f"{response.text[:300]} (payload={size} байт)"
                 )
                 raise _PayloadTooLargeError(response.text[:1000])
             if (
@@ -317,9 +323,36 @@ class LLMClient:
                 )
 
     @staticmethod
+    def _payload_chars(payload):
+        total = 0
+        for message in payload.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, str):
+                total += len(content)
+            elif content is not None:
+                total += len(
+                    json.dumps(content, ensure_ascii=False, default=str)
+                )
+        tools = payload.get("tools")
+        if isinstance(tools, list):
+            total += len(json.dumps(tools, ensure_ascii=False, default=str))
+        return total
+
+    @staticmethod
     def _reduce_oversized_payload(payload, attempt):
         messages = payload.get("messages", [])
         changed = False
+
+        def shorten(items, limit):
+            nonlocal changed
+            for item in items:
+                content = item.get("content")
+                if isinstance(content, str) and len(content) > limit:
+                    item["content"] = (
+                        content[:limit]
+                        + "\n…[сокращено для повтора запроса]"
+                    )
+                    changed = True
 
         tool_messages = [
             message
@@ -328,58 +361,67 @@ class LLMClient:
             and isinstance(message.get("content"), str)
         ]
         if attempt == 0:
-            for message in tool_messages:
-                content = message["content"]
-                if len(content) > 2000:
-                    message["content"] = (
-                        content[: max(1000, len(content) // 2)]
-                        + "\n…[результат сокращён для повтора запроса]"
-                    )
-                    changed = True
+            shorten(tool_messages, 2000)
         elif attempt == 1:
-            for message in tool_messages:
-                content = message["content"]
-                if len(content) > 1500:
-                    message["content"] = (
-                        content[:1500]
-                        + "\n…[результат сокращён для повтора запроса]"
-                    )
-                    changed = True
+            shorten(tool_messages, 1500)
         else:
-            for message in tool_messages:
-                content = message["content"]
-                if len(content) > 800:
-                    message["content"] = (
-                        content[:800]
-                        + "\n…[результат сокращён для повтора запроса]"
-                    )
-                    changed = True
-            tools = payload.get("tools")
-            if isinstance(tools, list) and len(tools) > 64:
-                payload["tools"] = tools[:64]
-                changed = True
+            shorten(tool_messages, 800)
+
+        if attempt >= 1:
+            shorten(
+                [
+                    message
+                    for message in messages
+                    if message.get("role") != "system"
+                ],
+                3000,
+            )
 
         max_tokens = payload.get("max_tokens")
         if isinstance(max_tokens, int) and max_tokens > 512:
             payload["max_tokens"] = max(512, max_tokens // 2)
             changed = True
 
+        # Убираем самые старые реплики, не ломая пары tool_calls/tool.
+        budget = (60000, 36000, 20000)[min(attempt, 2)]
+        guard = 0
+        while LLMClient._payload_chars(payload) > budget and guard < 200:
+            guard += 1
+            removable = None
+            for index, message in enumerate(messages[:-1]):
+                if message.get("role") not in {"user", "assistant"}:
+                    continue
+                if message.get("tool_calls"):
+                    continue
+                following = messages[index + 1].get("role")
+                if following == "tool":
+                    continue
+                removable = index
+                break
+            if removable is None:
+                break
+            del messages[removable]
+            changed = True
+
+        if attempt >= 2:
+            tools = payload.get("tools")
+            if isinstance(tools, list) and len(tools) > 24:
+                payload["tools"] = tools[:24]
+                changed = True
+            shorten(
+                [
+                    message
+                    for message in messages
+                    if message.get("role") == "system"
+                ],
+                8000,
+            )
+
         if not changed and attempt < 2:
             return LLMClient._reduce_oversized_payload(
                 payload,
                 attempt + 1,
             )
-        if not changed:
-            removable = [
-                index
-                for index, message in enumerate(messages)
-                if message.get("role") != "system"
-                and index < len(messages) - 1
-            ]
-            if removable:
-                del messages[removable[0]]
-                changed = True
-
         return changed
 
     def _request_with_size_retries(self, payload, api_url, api_key):
