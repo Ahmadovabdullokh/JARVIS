@@ -2238,6 +2238,7 @@ class JarvisWindow:
         for item, radius in zip(
             self._reactor.get("glows", ()),
             (pulse + 26, pulse + 16, pulse + 7),
+            strict=False,
         ):
             self.canvas.coords(
                 item,

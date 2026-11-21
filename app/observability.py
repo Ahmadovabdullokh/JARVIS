@@ -163,10 +163,13 @@ class TraceLogger:
 
 
 _TRACER = None
+_TRACER_LOCK = threading.Lock()
 
 
 def tracer():
     global _TRACER
     if _TRACER is None:
-        _TRACER = TraceLogger()
+        with _TRACER_LOCK:
+            if _TRACER is None:
+                _TRACER = TraceLogger()
     return _TRACER

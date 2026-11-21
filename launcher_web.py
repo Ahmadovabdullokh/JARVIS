@@ -48,12 +48,12 @@ def _find_hwnd(timeout=5.0):
     while time.time() < deadline:
         found = []
 
-        def _cb(hwnd, _param):
+        def _cb(hwnd, _param, _found=found):
             if not win32gui.IsWindowVisible(hwnd):
                 return
             _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
             if window_pid == pid and win32gui.GetWindowTextLength(hwnd):
-                found.append(hwnd)
+                _found.append(hwnd)
 
         win32gui.EnumWindows(_cb, None)
         if found:
@@ -454,7 +454,6 @@ def run_web_ui(bridge, smoke=False, debug=False):
             f"[WEB LAUNCHER] Ошибка GUI: "
             f"{type(error).__name__}: {error}"
         )
-        bridge.shutdown()
         api.stop_tray()
         from launcher import run_tk
 

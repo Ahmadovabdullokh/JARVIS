@@ -67,8 +67,10 @@ def _section(config, name):
 class UiBridge:
     def __init__(self):
         self._lock = threading.Lock()
+        self._cursor_lock = threading.Lock()
         self._catalog = []
         self._started = False
+        self._shutdown_done = False
         self._backend_started = False
         self._mic_stop = threading.Event()
         self._mic_thread = None
@@ -82,9 +84,10 @@ class UiBridge:
         self._event_cursors = {}
 
     def start(self, start_backend=True):
-        if self._started:
-            return
-        self._started = True
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
         self._mic_thread = threading.Thread(
             target=self._mic_loop,
             name="JARVIS-MicMeter",
@@ -132,6 +135,10 @@ class UiBridge:
             self._mic_stop.wait(0.3)
 
     def shutdown(self):
+        with self._lock:
+            if self._shutdown_done:
+                return
+            self._shutdown_done = True
         self._mic_stop.set()
         try:
             stop_assistant()
@@ -190,7 +197,8 @@ class UiBridge:
         return data
 
     def poll(self, consumer="default"):
-        cursor = self._event_cursors.get(consumer, 0)
+        with self._cursor_lock:
+            cursor = self._event_cursors.get(consumer, 0)
         latest = cursor
         events = []
         for seq, event_type, payload in drain_ui_events(cursor):
@@ -205,7 +213,8 @@ class UiBridge:
                     "ts": time.time(),
                 }
             )
-        self._event_cursors[consumer] = latest
+        with self._cursor_lock:
+            self._event_cursors[consumer] = latest
         return {
             "events": events,
             "snapshot": self._snapshot(),
