@@ -131,6 +131,50 @@ class JarvisBridgeApi:
             name="JARVIS-Tray",
             daemon=True,
         ).start()
+        threading.Thread(
+            target=self._unlock_watch_loop,
+            name="JARVIS-Unlock",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _input_desktop_name():
+        """Name of the current input desktop: 'Default' when unlocked,
+        'Winlogon' while the workstation is locked."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            hdesk = user32.OpenInputDesktop(0, False, 0x02000000)
+            if not hdesk:
+                return None
+            try:
+                buf = ctypes.create_unicode_buffer(256)
+                needed = wintypes.DWORD(0)
+                if not user32.GetUserObjectInformationW(
+                    hdesk, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)
+                ):
+                    return None
+                return buf.value
+            finally:
+                user32.CloseDesktop(hdesk)
+        except Exception:
+            return None
+
+    def _unlock_watch_loop(self):
+        was_locked = False
+        while not self._quitting:
+            try:
+                name = self._input_desktop_name()
+                locked = name not in (None, "Default")
+                if was_locked and name == "Default":
+                    log.info("[UNLOCK] Workstation unlocked; showing window.")
+                    self.show_window()
+                was_locked = locked
+            except Exception:
+                pass
+            time.sleep(1.5)
 
     def rpc(self, request_json):
         try:
@@ -166,7 +210,9 @@ class JarvisBridgeApi:
             if method == "window_action":
                 result = self._window_action(payload)
             else:
-                result = self._bridge.handle(method, payload)
+                result = self._bridge.handle(
+                    method, payload, consumer="desktop"
+                )
             response = {
                 "type": "jarvis_response",
                 "id": request_id,
@@ -297,18 +343,22 @@ class JarvisBridgeApi:
             self._tray = None
 
 
-def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    smoke = "--smoke" in argv
-    debug = "--debug" in argv
-    if debug:
-        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
-            "--remote-debugging-port=9222"
-        )
+def _acquire_single_instance():
+    """Return a mutex handle if this is the only JARVIS instance, else None."""
+    try:
+        import win32api
+        import win32con
+        import win32event
 
-    ensure_runtime_dirs()
-    _enable_dpi_awareness()
+        mutex = win32event.CreateMutex(None, False, "Local\\JARVIS-SingleInstance")
+        if win32api.GetLastError() == win32con.ERROR_ALREADY_EXISTS:
+            return None
+        return mutex
+    except Exception:
+        return True
 
+
+def _prepare_gui():
     try:
         import pythonnet
 
@@ -341,10 +391,22 @@ def main(argv=None):
     except Exception:
         pass
 
+
+def run_web_ui(bridge, smoke=False, debug=False):
+    """Открывает WebView2-окно JARVIS на переданном UiBridge.
+
+    Используется и обычным launcher_web.main(), и launcher_remote
+    в режиме --hud, чтобы окно на ПК и мобильный клиент делили
+    один backend и видели одни и те же события.
+    """
+
+    _prepare_gui()
+    cache = DATA_DIR / ("webview2-debug" if debug else "webview2")
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(cache))
+
     try:
         import webview
-
-        from app.ui_bridge import UiBridge
     except Exception as error:
         log.info(
             f"[WEB LAUNCHER] WebView2 недоступен: "
@@ -354,10 +416,6 @@ def main(argv=None):
 
         return run_tk()
 
-    cache = DATA_DIR / ("webview2-debug" if debug else "webview2")
-    cache.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(cache))
-
     ui_file = resource_path("ui", "index.html")
     if not ui_file.exists():
         log.info("[WEB LAUNCHER] ui/index.html не найден.")
@@ -366,7 +424,6 @@ def main(argv=None):
         return run_tk()
 
     width, height, x, y = _window_geometry()
-    bridge = UiBridge()
     api = JarvisBridgeApi(bridge, smoke=smoke)
 
     try:
@@ -407,6 +464,39 @@ def main(argv=None):
         api.stop_tray()
 
     return 0
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    smoke = "--smoke" in argv
+    debug = "--debug" in argv
+
+    mutex = _acquire_single_instance()
+    if mutex is None:
+        log.info("[WEB LAUNCHER] JARVIS is already running; exiting.")
+        return 0
+    if debug:
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+            "--remote-debugging-port=9222"
+        )
+
+    ensure_runtime_dirs()
+    _enable_dpi_awareness()
+
+    from app.ui_bridge import UiBridge
+
+    try:
+        import webview  # noqa: F401
+    except Exception as error:
+        log.info(
+            f"[WEB LAUNCHER] WebView2 недоступен: "
+            f"{type(error).__name__}: {error}"
+        )
+        from launcher import run_tk
+
+        return run_tk()
+
+    return run_web_ui(UiBridge(), smoke=smoke, debug=debug)
 
 
 if __name__ == "__main__":
