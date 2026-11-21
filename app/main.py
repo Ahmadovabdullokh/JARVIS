@@ -417,7 +417,7 @@ def initialize():
         pitch=tts_config["pitch"],
         voices=tts_config["voices"],
         offline_fallback=bool(
-            config.get("tts_offline_fallback", False)
+            config.get("tts_offline_fallback", True)
         ),
         output_device=tts_config.get("output_device"),
         stream_sentences=bool(

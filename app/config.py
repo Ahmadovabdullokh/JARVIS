@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
     "tts_stream_sentences": True,
     "chat_mode": "tasks",
     "memory_size": 50,
-    "tts_offline_fallback": False,
+    "tts_offline_fallback": True,
     "agent": {
         "autonomy": "balanced",
         "max_iterations": 12,

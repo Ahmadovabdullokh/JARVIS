@@ -60,12 +60,12 @@
     },
     "memory_size": 50,
     "tts_rate": 185,
-    "tts_voice": "en-US-AndrewMultilingualNeural",
+    "tts_voice": "ru-RU-DmitryNeural",
     "tts_pitch": "-8Hz",
     "tts_voices": [
-        "en-US-AndrewMultilingualNeural"
+        "ru-RU-DmitryNeural"
     ],
-    "tts_offline_fallback": false,
+    "tts_offline_fallback": true,
     "tts_output_device": "",
     "tts_stream_sentences": true,
     "agent": {
