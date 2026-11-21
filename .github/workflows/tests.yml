@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,16 +23,20 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install -r requirements.txt
           .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
       - name: Compile
-        run: .\.venv\Scripts\python.exe -m compileall -q app launcher.py tests
+        run: >
+          .\.venv\Scripts\python.exe -m compileall -q
+          app launcher.py launcher_web.py launcher_remote.py tests
       - name: Lint
-        run: .\.venv\Scripts\python.exe -m ruff check app tests launcher.py
+        run: >
+          .\.venv\Scripts\python.exe -m ruff check
+          app tests launcher.py launcher_web.py launcher_remote.py scripts
       - name: Type check
         run: .\.venv\Scripts\python.exe -m mypy app
         continue-on-error: true
       - name: Run tests with coverage
-        run: |
-          .\.venv\Scripts\python.exe -m coverage run -m unittest discover -s tests -v
-          .\.venv\Scripts\python.exe -m coverage report --skip-covered
+        run: >
+          .\.venv\Scripts\python.exe -m pytest tests -q
+          --cov=app --cov-report=term-missing --cov-fail-under=50
       - name: Dependency audit
         run: .\.venv\Scripts\python.exe -m pip_audit
         continue-on-error: true

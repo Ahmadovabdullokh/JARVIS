@@ -459,10 +459,9 @@ JARVIS_SLACK_WEBHOOK
 ## Тесты и разработка
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m coverage run -m unittest discover -s tests
-.\.venv\Scripts\python.exe -m coverage report
-.\.venv\Scripts\python.exe -m ruff check app tests launcher.py launcher_web.py
+.\.venv\Scripts\python.exe -m pytest tests -v
+.\.venv\Scripts\python.exe -m pytest tests --cov=app --cov-report=term-missing
+.\.venv\Scripts\python.exe -m ruff check app tests launcher.py launcher_web.py launcher_remote.py scripts
 .\.venv\Scripts\python.exe -m mypy app
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 pre-commit install
@@ -471,8 +470,9 @@ pre-commit install
 Тесты покрывают реестр инструментов, safety-политики, undo, сессии,
 RAG, retry/fallback LLM, диагностику, память, конфиг, таймауты
 инструментов, голосовой пайплайн, запуск приложений и сайтов, фокус
-окон и Telegram AppX (сейчас 183 теста). CI гоняет Python 3.10/3.11/3.12,
-ruff, mypy, coverage и `pip-audit`: `.github/workflows/tests.yml`.
+окон, удалённый доступ и Telegram AppX (сейчас 227 тестов). CI гоняет
+Python 3.10/3.11/3.12/3.13, ruff, mypy, coverage (порог 50%) и
+`pip-audit`: `.github/workflows/tests.yml`.
 Зависимости обновляет Dependabot (`.github/dependabot.yml`).
 
 Конфигурация и пути теперь централизованы: `app/config.py` (загрузка,

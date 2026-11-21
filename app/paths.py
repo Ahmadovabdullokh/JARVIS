@@ -4,6 +4,7 @@
 компоненты берут пути отсюда, чтобы не расходиться при упаковке.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -20,8 +21,14 @@ APP_DIR = RESOURCE_DIR / "app"
 CONFIG_DIR = BASE_DIR / "config"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 EXAMPLE_CONFIG_FILE = RESOURCE_DIR / "config" / "config.example.json"
-DATA_DIR = BASE_DIR / "data"
-LOG_DIR = DATA_DIR / "logs"
+# JARVIS_DATA_DIR/JARVIS_LOG_DIR позволяют увести рантайм-данные
+# (логи, задания, память) в отдельный каталог — например, в тестах.
+DATA_DIR = Path(
+    os.environ.get("JARVIS_DATA_DIR") or (BASE_DIR / "data")
+)
+LOG_DIR = Path(
+    os.environ.get("JARVIS_LOG_DIR") or (DATA_DIR / "logs")
+)
 MODELS_DIR = BASE_DIR / "models"
 
 
