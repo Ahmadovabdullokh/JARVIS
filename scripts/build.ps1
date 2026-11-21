@@ -11,10 +11,12 @@ if (-not (Test-Path -LiteralPath $Python)) {
 & $Python scripts\gen_version.py
 & $Python -m PyInstaller --noconfirm jarvis.spec
 
-# The frozen app resolves .env relative to the exe dir (BASE_DIR/data).
-# Copy it so API keys (GROQ_API_KEY, DEEPSEEK_API_KEY) are available.
-if (Test-Path -LiteralPath ".env") {
-    Copy-Item -LiteralPath ".env" -Destination "dist\JARVIS\.env" -Force
+# Секреты (.env) в сборку не попадают. Пользователь задаёт ключи через
+# переменные окружения или config.json в своём профиле.
+$LeakedEnv = Join-Path $Root "dist\JARVIS\.env"
+if (Test-Path -LiteralPath $LeakedEnv) {
+    Remove-Item -LiteralPath $LeakedEnv -Force
+    Write-Host "[JARVIS] Removed stale .env from dist (secrets must not ship)."
 }
 
 Write-Host "[JARVIS] Build complete: dist\JARVIS\JARVIS.exe"
