@@ -8,6 +8,7 @@
 """
 
 import logging
+import re
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -21,6 +22,33 @@ _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _configured = False
 _lock = threading.Lock()
 _sinks = []
+
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)([?&]token=)[^&\s\"']+"), r"\1***"),
+    (re.compile(r"(?i)(authorization:\s*bearer\s+)\S+"), r"\1***"),
+    (re.compile(r"(?i)(jarvis_token=)[^;\s\"']+"), r"\1***"),
+    (re.compile(r"\b(?:sk|gsk)[-_][A-Za-z0-9_-]{16,}\b"), "***"),
+)
+
+
+class _RedactFilter(logging.Filter):
+    """Вырезает токены и API-ключи из любой записи лога."""
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        redacted = message
+        for pattern, replacement in _SECRET_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+_REDACT_FILTER = _RedactFilter()
 
 
 class _SinkHandler(logging.Handler):
@@ -66,16 +94,19 @@ def configure_logging(level=logging.INFO):
             encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(_REDACT_FILTER)
         root.addHandler(file_handler)
 
         stream = sys.stderr
         if stream is not None and getattr(stream, "isatty", lambda: False)():
             console = logging.StreamHandler(stream)
             console.setFormatter(formatter)
+            console.addFilter(_REDACT_FILTER)
             root.addHandler(console)
 
         sink_handler = _SinkHandler()
         sink_handler.setFormatter(formatter)
+        sink_handler.addFilter(_REDACT_FILTER)
         root.addHandler(sink_handler)
 
         _configured = True
