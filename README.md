@@ -498,11 +498,15 @@ scripts\remote_info.ps1       # покажет адрес и токен для �
   тот же протокол, что у pywebview. Слушает только localhost.
 - Токен доступа хранится в `config.json` → `remote.token`
   (создаётся автоматически, `secrets.token_urlsafe(24)`)
-  или задаётся `JARVIS_REMOTE_TOKEN`. Принимается в query `?token=`,
-  заголовке `Authorization: Bearer` и cookie `jarvis_token`.
+  или задаётся `JARVIS_REMOTE_TOKEN`. Клиент обменивает токен на
+  HttpOnly-cookie через `POST /login`; для совместимости
+  `GET /?token=...` один раз ставит cookie и редиректит на `/`.
+  В URL токен больше не передаётся и не пишется в логи.
 - Защита: после 10 неудачных попыток авторизации IP блокируется
-  на 2 минуты; `remote.read_only: true` или `remote.allowed_methods`
-  в config.json ограничивают набор RPC-методов.
+  на 2 минуты; `X-Forwarded-For` учитывается только от доверенных
+  прокси (`JARVIS_TRUSTED_PROXIES`). По умолчанию удалённый доступ
+  read-only: полный набор методов включается `remote.read_only: false`
+  или явным `remote.allowed_methods` в config.json.
 - `GET /health` — открытый healthcheck (статус и uptime, без данных).
 - `POST /stt` — распознавание аудио с телефона (webm/ogg/wav/mp3
   через ffmpeg → Groq Whisper), для кнопки MIC в веб-интерфейсе.
