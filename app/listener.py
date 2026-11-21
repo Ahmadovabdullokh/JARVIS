@@ -55,6 +55,7 @@ class VoiceListener:
 
         self.client = Groq(api_key=api_key) if api_key else None
         self.local_model = None
+        self._prompt_supported = True
 
         if self.local_model_name:
             try:
@@ -68,6 +69,14 @@ class VoiceListener:
                 log.info(f"[STT] Локальная модель: {self.local_model_name}")
             except Exception as error:
                 log.info(f"[STT] Локальная модель недоступна: {error}")
+
+        # Включаемся только если реально есть рабочий бэкенд.
+        self.enabled = self.client is not None or self.local_model is not None
+        if not self.enabled:
+            log.info(
+                "[STT] Голосовой ввод отключён: локальная модель "
+                "не загрузилась и GROQ_API_KEY отсутствует."
+            )
 
         if self.client is not None:
             log.info("[GROQ] Speech-to-Text")
@@ -297,7 +306,7 @@ class VoiceListener:
             "temperature": 0.0,
         }
 
-        if use_prompt and self.prompt:
+        if use_prompt and self.prompt and self._prompt_supported:
             params["prompt"] = self.prompt
 
         return (
@@ -354,8 +363,11 @@ class VoiceListener:
                 if not self.prompt:
                     raise
 
+                # Провайдер не поддерживает prompt для этой модели:
+                # запоминаем и больше не отправляем его.
+                self._prompt_supported = False
                 log.info(
-                    f"[GROQ] Подсказка STT отклонена, "
+                    f"[GROQ] Подсказка STT не поддерживается, "
                     f"повтор без неё: {prompt_error}"
                 )
                 transcription = self._create_transcription(
