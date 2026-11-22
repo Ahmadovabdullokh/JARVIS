@@ -504,9 +504,9 @@ JARVIS можно использовать с телефона: Android-прил
 Запуск удалённого режима на ПК:
 
 ```powershell
-scripts\start_remote.ps1      # backend + HTTP-сервер на 127.0.0.1:8765
-scripts\start_tunnel_cf.ps1   # HTTPS-туннель через Cloudflare (рекомендуется)
-scripts\start_tunnel.ps1      # HTTPS-туннель через Pinggy (запасной вариант)
+scripts\start_all.ps1         # всё сразу: backend + HUD + remote + бот
+scripts\start_remote.ps1      # только backend + HTTP-сервер на 127.0.0.1:8765
+scripts\start_tunnel_cf.ps1   # HTTPS-туннель через Cloudflare
 scripts\remote_info.ps1       # покажет адрес и токен для приложения
 ```
 
@@ -529,7 +529,6 @@ scripts\remote_info.ps1       # покажет адрес и токен для �
 - Туннель: `scripts/start_tunnel_cf.ps1` использует cloudflared
   (`tools/cloudflared.exe`, quick tunnel или named tunnel —
   постоянный URL настраивается в `remote.tunnel_name`).
-  `scripts/start_tunnel.ps1` — запасной вариант на Pinggy.
   Публичный URL пишется в `data/remote_url.json`.
 - В приложении ввести «Адрес сервера» (из remote_info.ps1) и
   «Токен» — открывается нативный экран JARVIS с чатом.

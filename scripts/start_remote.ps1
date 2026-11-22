@@ -1,5 +1,5 @@
 ﻿# Запуск JARVIS в режиме удалённого доступа (мобильный клиент).
-# Окно на ПК не открывается; доступ идёт через туннель (start_tunnel.ps1).
+# Окно на ПК не открывается; доступ идёт через туннель (start_tunnel_cf.ps1).
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot\..
 

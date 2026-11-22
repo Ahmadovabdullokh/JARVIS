@@ -45,8 +45,8 @@ WinForms, из-за чего импорт модуля падал. Патч об
 - Политика методов: `remote.allowed_methods` (приоритет) или
   `remote.read_only` в `config/config.json`; `_remote_policy()` читается
   на каждом запросе. Для чата с телефона нужен `send_message`.
-- Туннели: `scripts\start_tunnel_cf.ps1` (cloudflared, quick или named
-  tunnel через `remote.tunnel_name`), `scripts\start_tunnel.ps1` — Pinggy.
+- Туннель: `scripts\start_tunnel_cf.ps1` (cloudflared, quick или named
+  tunnel через `remote.tunnel_name`).
 - Android: нативный пульт `android/app/src/main/java/.../MainActivity.java`
   (без WebView): чат через Bearer + `POST /rpc`, MIC → `POST /stt`,
   экраны задач/журнала в меню, автореконнект. `RemoteService` держит

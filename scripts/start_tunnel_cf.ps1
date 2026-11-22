@@ -1,4 +1,4 @@
-# Поднимает HTTPS-туннель к локальному JARVIS remote-серверу
+﻿# Поднимает HTTPS-туннель к локальному JARVIS remote-серверу
 # через Cloudflare quick tunnel (cloudflared.exe, без регистрации).
 # Публичный URL сохраняется в data\remote_url.json
 # Предварительно должен быть запущен scripts\start_remote.ps1
