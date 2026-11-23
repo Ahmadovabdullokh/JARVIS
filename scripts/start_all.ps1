@@ -1,7 +1,8 @@
 ﻿param(
     [switch]$NoHud,
     [switch]$NoPhone,
-    [switch]$Tunnel
+    [switch]$Tunnel,
+    [switch]$NoWindow
 )
 
 # Запуск всего JARVIS одной командой:
@@ -14,6 +15,15 @@ Set-Location -LiteralPath $Root
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Не найдено .venv. Сначала выполните: scripts\install.ps1"
+}
+
+# Для автозапуска: без лишнего окна консоли (логи всё равно в data\).
+$PythonExe = $Python
+if ($NoWindow) {
+    $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+    if (Test-Path -LiteralPath $Pythonw) {
+        $PythonExe = $Pythonw
+    }
 }
 
 $HealthUrl = "http://127.0.0.1:8765/health"
@@ -85,7 +95,7 @@ if (Test-JarvisHealth) {
     if ($NoHud) {
         $coreArgs += "--no-hud"
     }
-    $core = Start-Process -FilePath $Python -ArgumentList $coreArgs `
+    $core = Start-Process -FilePath $PythonExe -ArgumentList $coreArgs `
         -WorkingDirectory $Root -PassThru
     Write-Host "Запускаю backend, remote-сервер и Telegram-бота (PID $($core.Id))..."
     $ready = $false

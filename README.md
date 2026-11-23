@@ -175,6 +175,13 @@ powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 ```
 
+Ярлыки на рабочем столе и в автозапуске запускают приложение
+напрямую (`pythonw launcher_web.py` или `JARVIS.exe`). Приложение
+само поднимает HUD, remote-сервер для телефона и Telegram-бота,
+поэтому отдельный `start_all.ps1` при входе в Windows не нужен.
+Если ярлык с именем `JARVIS.lnk` блокируется антивирусом, скрипт
+создаёт `JARVIS App.lnk`; при необходимости добавьте исключение.
+
 Создайте `.env` в корне проекта:
 
 ```text
@@ -490,9 +497,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start_all.ps1
 ```
 
 Полезные варианты: `-NoHud` (без окна на ПК), `-NoPhone` (не трогать
-телефон), `-Tunnel` (дополнительно поднять Cloudflare-туннель).
-Адрес для телефона и токен скрипт печатает в конце; остановить —
-`Stop-Process -Id <PID>`.
+телефон), `-Tunnel` (дополнительно поднять Cloudflare-туннель),
+`-NoWindow` (без окна консоли, для автозапуска). Адрес для телефона
+и токен скрипт печатает в конце; остановить — `Stop-Process -Id <PID>`.
 
 ## Мобильный доступ (APK-пульт)
 
