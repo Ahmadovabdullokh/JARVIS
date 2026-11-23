@@ -1,13 +1,13 @@
 .context-status-main span.status-ready,
 .reactor-caption strong.status-ready {
-  color: var(--success);
+  color: var(--gold);
 }
 
 .context-status-main span.status-listening,
 .context-status-main span.status-speaking,
 .reactor-caption strong.status-listening,
 .reactor-caption strong.status-speaking {
-  color: var(--accent);
+  color: var(--accent-soft);
 }
 
 .context-status-main span.status-thinking,
@@ -24,7 +24,7 @@
 
 .context-status-main span.status-starting,
 .reactor-caption strong.status-starting {
-  color: var(--accent-soft);
+  color: var(--ice);
 }
 
 .context-status-main span.status-stopped,
@@ -38,25 +38,25 @@
 }
 
 .context-ring span.status-ready {
-  background: var(--success);
-  box-shadow: 0 0 14px var(--success);
+  background: var(--gold);
+  box-shadow: 0 0 16px var(--gold);
 }
 
 .context-ring span.status-listening,
 .context-ring span.status-speaking {
   background: var(--accent);
-  box-shadow: 0 0 14px var(--accent);
+  box-shadow: 0 0 16px var(--accent);
 }
 
 .context-ring span.status-thinking,
 .context-ring span.status-processing {
   background: var(--violet);
-  box-shadow: 0 0 14px var(--violet);
+  box-shadow: 0 0 16px var(--violet);
 }
 
 .context-ring span.status-error {
   background: var(--error);
-  box-shadow: 0 0 14px var(--error);
+  box-shadow: 0 0 16px var(--error);
 }
 
 .context-ring span.status-stopped {
@@ -66,7 +66,7 @@
 
 .context-ring span.status-mic_off {
   background: var(--warning);
-  box-shadow: 0 0 14px var(--warning);
+  box-shadow: 0 0 16px var(--warning);
 }
 
 .journal-line {
@@ -74,15 +74,15 @@
 }
 
 .journal-line.log-error {
-  color: #ff9d9d;
+  color: #ff9184;
 }
 
 .journal-line.log-tool {
-  color: #cdb6ff;
+  color: #ffc189;
 }
 
 .journal-line.log-answer {
-  color: #8af7c7;
+  color: #ffe3a6;
 }
 
 .journal-line.log-system {
@@ -99,7 +99,7 @@
   color: var(--dim);
   text-align: center;
   border: 1px dashed var(--border-soft);
-  border-radius: 8px;
+  border-radius: 4px;
   font-size: 10px;
 }
 

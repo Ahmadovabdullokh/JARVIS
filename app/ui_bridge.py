@@ -204,7 +204,7 @@ class UiBridge:
                 "settings": self.settings_payload(),
                 "palette": self.palette(),
                 "greeting": persona.get_time_greeting(),
-                "version": "MK IX",
+                "version": "MK X",
             }
         )
         return data

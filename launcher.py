@@ -1842,7 +1842,7 @@ class JarvisWindow:
 
     def _boot_sequence(self):
         lines = [
-            "J.A.R.V.I.S. MK IX // ЗАГРУЗКА",
+            "J.A.R.V.I.S. MK X // ЗАГРУЗКА",
             "[OK] Распознавание речи: Groq Whisper / локальная STT",
             "[OK] Языковая модель: DeepSeek",
             "[OK] Синтез речи: Edge TTS",

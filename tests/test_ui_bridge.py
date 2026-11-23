@@ -67,7 +67,7 @@ def test_bootstrap_is_json_serializable(monkeypatch):
     assert data["status"]["name"] == "ready"
     assert data["telemetry"]["cpu"] == 12
     assert data["tasks"][0]["title"] == "Demo"
-    assert data["version"] == "MK IX"
+    assert data["version"] == "MK X"
     assert data["greeting"] == "Доброй ночи"
     json.dumps(data, ensure_ascii=False)
 

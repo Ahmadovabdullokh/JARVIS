@@ -133,6 +133,10 @@
     ctxRam: byId("ctx-ram"),
     ctxDisk: byId("ctx-disk"),
     ctxBat: byId("ctx-bat"),
+    ctxCpuBar: byId("ctx-cpu-bar"),
+    ctxRamBar: byId("ctx-ram-bar"),
+    ctxDiskBar: byId("ctx-disk-bar"),
+    ctxBatBar: byId("ctx-bat-bar"),
     ctxUptime: byId("ctx-uptime"),
     commandSearch: byId("command-search"),
     commandCategory: byId("command-category"),
@@ -187,16 +191,22 @@
     els.footerUptime.textContent = "UI uptime: " + formatUptime(uptime);
   }
 
-  async function connect() {
+  function connect() {
     try {
-      await Api.waitForBridge(7000);
-      const data = await Api.rpc("bootstrap");
-      applyBootstrap(data || {});
-      setConnected(true);
-      if (!state.polling) {
-        state.polling = true;
-        poll();
-      }
+      Api.waitForBridge(7000).then(function () {
+        return Api.rpc("bootstrap");
+      }).then(function (data) {
+        applyBootstrap(data || {});
+        setConnected(true);
+        hideBootSplash();
+        if (!state.polling) {
+          state.polling = true;
+          poll();
+        }
+      }).catch(function () {
+        setConnected(false);
+        setTimeout(connect, 1400);
+      });
     } catch (error) {
       setConnected(false);
       setTimeout(connect, 1400);
@@ -413,6 +423,62 @@
     renderMessages();
   }
 
+  function enhanceCodeBlocks(container) {
+    container.querySelectorAll("pre").forEach(function (pre) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "code-copy";
+      button.textContent = "COPY";
+      button.addEventListener("click", function () {
+        const code = pre.querySelector("code");
+        const text = (code || pre).innerText;
+        copyText(text).then(function (ok) {
+          button.textContent = ok ? "OK" : "FAIL";
+          button.classList.toggle("copied", ok);
+          setTimeout(function () {
+            button.textContent = "COPY";
+            button.classList.remove("copied");
+          }, 1400);
+        });
+      });
+      pre.appendChild(button);
+    });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () {
+        return true;
+      }).catch(function () {
+        return legacyCopy(text);
+      });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+
+  function legacyCopy(text) {
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(area);
+      return ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function hideBootSplash() {
+    const splash = document.getElementById("boot-splash");
+    if (splash) {
+      splash.classList.add("done");
+    }
+  }
+
   function appendMessage(role, value) {
     const text = String(value == null ? "" : value).trim();
     if (!text) return;
@@ -448,6 +514,7 @@
       body.className = "message-body";
       if (message.role === "assistant") {
         body.innerHTML = renderMarkdown(message.text);
+        enhanceCodeBlocks(body);
       } else {
         body.innerHTML = escapeHtml(message.text).replace(/\n/g, "<br>");
       }
@@ -845,7 +912,36 @@
     els.ctxRam.textContent = ram;
     els.ctxDisk.textContent = disk;
     els.ctxBat.textContent = battery;
+    setGauge(
+      els.ctxCpuBar,
+      available ? percentageNumber(data.cpu) : 0
+    );
+    setGauge(
+      els.ctxRamBar,
+      available ? percentageNumber(data.memory) : 0
+    );
+    setGauge(
+      els.ctxDiskBar,
+      available ? percentageNumber(data.disk) : 0
+    );
+    setGauge(
+      els.ctxBatBar,
+      data.battery && !Number.isNaN(Number(data.battery.percent))
+        ? Number(data.battery.percent)
+        : 0
+    );
     els.ctxUptime.textContent = data.uptime || "—";
+  }
+
+  function percentageNumber(value) {
+    if (value == null || Number.isNaN(Number(value))) return 0;
+    return Math.max(0, Math.min(100, Number(value)));
+  }
+
+  function setGauge(element, value) {
+    if (element) {
+      element.style.width = Math.round(value) + "%";
+    }
   }
 
   function setStatus(status) {
@@ -1567,6 +1663,7 @@
     renderJournal();
     renderSettings();
     Api.rpc("client_ready").catch(function () {});
+    setTimeout(hideBootSplash, 2600);
     connect();
   }
 

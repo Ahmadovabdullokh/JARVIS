@@ -3,11 +3,15 @@
  * RPC (/rpc), /stt и любые POST не кэшируются и не перехватываются.
  */
 
-var CACHE = "jarvis-shell-v2";
+var CACHE = "jarvis-shell-v3";
 var SHELL = [
   "./",
   "./index.html",
+  "./css/fonts.css",
   "./css/tokens.css",
+  "./assets/fonts/Orbitron-Variable.ttf",
+  "./assets/fonts/Exo2-Variable.ttf",
+  "./assets/fonts/JetBrainsMono-Variable.ttf",
   "./css/base.css",
   "./css/layout.css",
   "./css/components.css",
