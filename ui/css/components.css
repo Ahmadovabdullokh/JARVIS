@@ -65,6 +65,17 @@
   background: rgba(46, 230, 255, 0.055);
 }
 
+.ghost-button.mic-toggle.off {
+  color: var(--warning);
+  border-color: rgba(255, 200, 87, 0.4);
+  background: rgba(255, 200, 87, 0.12);
+}
+
+.ghost-button.mic-toggle.off:hover {
+  color: var(--gold-soft);
+  background: rgba(255, 200, 87, 0.2);
+}
+
 .ghost-button.wide,
 .danger-button.wide {
   width: 100%;

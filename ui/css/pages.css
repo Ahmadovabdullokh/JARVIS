@@ -32,6 +32,11 @@
   color: var(--muted);
 }
 
+.context-status-main span.status-mic_off,
+.reactor-caption strong.status-mic_off {
+  color: var(--warning);
+}
+
 .context-ring span.status-ready {
   background: var(--success);
   box-shadow: 0 0 14px var(--success);
@@ -57,6 +62,11 @@
 .context-ring span.status-stopped {
   background: var(--dim);
   box-shadow: none;
+}
+
+.context-ring span.status-mic_off {
+  background: var(--warning);
+  box-shadow: 0 0 14px var(--warning);
 }
 
 .journal-line {

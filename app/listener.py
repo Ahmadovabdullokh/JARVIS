@@ -34,6 +34,9 @@ class VoiceListener:
     ):
         self.local_model_name = str(local_model or "").strip()
         self.enabled = bool(api_key or self.local_model_name)
+        # Временное выключение пользователем (шумная комната) не путать
+        # с enabled — доступностью STT-бэкенда.
+        self.mic_disabled = False
         if not self.enabled:
             log.info(
                 "[STT] Голосовой ввод отключён: нет GROQ_API_KEY "
@@ -193,6 +196,9 @@ class VoiceListener:
             while True:
 
                 chunk = audio_queue.get()
+
+                if self.mic_disabled:
+                    break
 
                 audio = np.squeeze(
                     chunk
@@ -400,14 +406,14 @@ class VoiceListener:
 
     def listen_once(self):
 
-        if not self.enabled:
+        if not self.enabled or self.mic_disabled:
             return ""
 
         try:
 
             audio = self._record_audio()
 
-            if audio is None:
+            if audio is None or self.mic_disabled:
                 return ""
 
             energy = float(
@@ -436,7 +442,7 @@ class VoiceListener:
     def measure_level(self, seconds=0.3):
         """Короткий замер громкости микрофона для индикатора UI."""
 
-        if not self.enabled:
+        if not self.enabled or self.mic_disabled:
             return 0.0
 
         try:

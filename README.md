@@ -553,7 +553,8 @@ scripts\remote_info.ps1       # покажет адрес и токен для �
       "allowed_methods": [
           "bootstrap", "client_ready", "client_error", "poll",
           "send_message", "stop", "set_mode", "get_catalog",
-          "get_journal", "get_audit", "cancel_task", "run_doctor"
+          "get_journal", "get_audit", "cancel_task", "run_doctor",
+          "set_microphone"
       ]
   }
   ```

@@ -42,6 +42,7 @@ _UI_EVENTS_LOCK = threading.Lock()
 _STOP_EVENT = threading.Event()
 _ACTIVE_AGENT = None
 _LISTENER = None
+_MIC_ENABLED = True
 _TRANSCRIPT_PREVIEW = False
 _SPEAK_TEXT = True
 _BARGE_IN = False
@@ -78,6 +79,39 @@ def set_chat_mode(mode: str) -> str:
 
 def get_listener():
     return _LISTENER
+
+
+def microphone_enabled() -> bool:
+    return _MIC_ENABLED
+
+
+def set_microphone_enabled(enabled: bool) -> bool:
+    """Включает/выключает прослушивание микрофона.
+
+    Полезно в шумной комнате: JARVIS перестаёт записывать звук, но
+    текстовый чат и озвучка ответов продолжают работать.
+    """
+    global _MIC_ENABLED
+
+    _MIC_ENABLED = bool(enabled)
+    listener = _LISTENER
+    if listener is not None:
+        try:
+            listener.mic_disabled = not _MIC_ENABLED
+        except Exception:
+            pass
+    set_status("listening" if _MIC_ENABLED else "mic_off")
+    publish_ui_event(
+        "system",
+        "Микрофон включён."
+        if _MIC_ENABLED
+        else "Микрофон выключен: JARVIS не слушает комнату.",
+    )
+    return _MIC_ENABLED
+
+
+def toggle_microphone() -> bool:
+    return set_microphone_enabled(not _MIC_ENABLED)
 
 
 def transcript_preview_enabled():
@@ -418,6 +452,10 @@ def initialize():
 
     global _LISTENER
     _LISTENER = listener
+    try:
+        listener.mic_disabled = not _MIC_ENABLED
+    except Exception:
+        pass
     set_transcript_preview(bool(config.get("transcript_preview", False)))
     set_speak_text(bool(config.get("speak_text", True)))
     set_barge_in(bool(config.get("voice_barge_in", False)))
@@ -981,12 +1019,19 @@ def run_assistant(
     last_wake_ack = 0.0
     follow_up_until = 0.0
 
+    def idle_status() -> None:
+        set_status("listening" if _MIC_ENABLED else "mic_off")
+
     def listen_for_voice_commands() -> None:
         nonlocal last_wake_ack, follow_up_until
 
         try:
             while not stop_listening.is_set():
                 if pause_listening.wait(timeout=0.1):
+                    continue
+                if not _MIC_ENABLED:
+                    if stop_listening.wait(0.15):
+                        break
                     continue
                 try:
                     recognized_text = listener.listen_once()
@@ -1005,6 +1050,9 @@ def run_assistant(
                     continue
 
                 if pause_listening.is_set():
+                    continue
+
+                if not _MIC_ENABLED:
                     continue
 
                 if not recognized_text:
@@ -1065,7 +1113,7 @@ def run_assistant(
     )
     listener_thread.start()
 
-    set_status("listening")
+    idle_status()
 
     try:
         while not stop_listening.is_set():
@@ -1081,7 +1129,7 @@ def run_assistant(
                     source, text = voice_commands.get(timeout=0.1)
                     on_reply = None
                 except queue.Empty:
-                    set_status("listening")
+                    idle_status()
                     continue
 
             if source == "wake":
@@ -1095,7 +1143,7 @@ def run_assistant(
                     speak(tts, ack)
                 finally:
                     pause_listening.clear()
-                    set_status("listening")
+                    idle_status()
                 continue
 
             if source == "announce":
@@ -1105,7 +1153,7 @@ def run_assistant(
                     speak(tts, text)
                 finally:
                     pause_listening.clear()
-                    set_status("listening")
+                    idle_status()
                 continue
 
             pause_listening.set()
@@ -1139,7 +1187,7 @@ def run_assistant(
                 )
             finally:
                 pause_listening.clear()
-                set_status("listening")
+                idle_status()
     finally:
         stop_listening.set()
         try:

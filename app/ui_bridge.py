@@ -12,8 +12,10 @@ from app.main import (
     get_chat_mode,
     get_listener,
     get_task_snapshot,
+    microphone_enabled,
     publish_ui_event,
     set_chat_mode,
+    set_microphone_enabled,
     set_speak_text,
     set_transcript_preview,
     stop_assistant,
@@ -28,6 +30,7 @@ from app.status import get_status, set_status
 log = get_logger(__name__)
 
 STATUS_TEXT = {
+    "mic_off": ("MIC OFF", "Микрофон выключен — можно печатать."),
     "starting": ("STARTING", "Запуск подсистем…"),
     "ready": ("READY", "Ожидаю команду…"),
     "listening": ("LISTENING", "Слушаю команду…"),
@@ -160,6 +163,7 @@ class UiBridge:
             "server_time": time.time(),
             "chat_mode": get_chat_mode(),
             "transcript_preview": transcript_preview_enabled(),
+            "mic_enabled": microphone_enabled(),
             "uptime_seconds": round(now - self._started_at, 1),
         }
 
@@ -442,6 +446,12 @@ class UiBridge:
         set_transcript_preview(enabled)
         return {"enabled": enabled}
 
+    def set_microphone(self, payload):
+        enabled = payload.get("enabled")
+        if enabled is None:
+            enabled = not microphone_enabled()
+        return {"enabled": set_microphone_enabled(bool(enabled))}
+
     def get_catalog(self):
         with self._lock:
             return {"tools": _json_safe(self._catalog)}
@@ -513,6 +523,7 @@ class UiBridge:
             "cancel_task": lambda: self.cancel_task(payload),
             "set_mode": lambda: self.set_mode(payload),
             "set_preview": lambda: self.set_preview(payload),
+            "set_microphone": lambda: self.set_microphone(payload),
             "get_catalog": lambda: self.get_catalog(),
             "get_journal": lambda: self.get_journal(payload),
             "get_audit": lambda: self.get_audit(payload),

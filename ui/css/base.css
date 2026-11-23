@@ -161,6 +161,11 @@ select:focus-visible {
   background: var(--dim);
 }
 
+.status-dot.mic_off {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(255, 200, 87, 0.14);
+}
+
 @keyframes status-pulse {
   0%,
   100% {

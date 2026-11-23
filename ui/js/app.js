@@ -20,6 +20,7 @@
     speaking: "SPEAKING",
     error: "ERROR",
     stopped: "OFFLINE",
+    mic_off: "MIC OFF",
   };
 
   const STATUS_DESCRIPTIONS = {
@@ -31,6 +32,7 @@
     speaking: "Говорю…",
     error: "Требуется внимание.",
     stopped: "Система остановлена.",
+    mic_off: "Микрофон выключен — можно печатать.",
   };
 
   const MODE_LABELS = { chat: "CHAT", tasks: "TASKS", code: "CODE" };
@@ -68,6 +70,7 @@
     mode: "tasks",
     preview: false,
     mic: 0,
+    micEnabled: true,
     connected: false,
     sending: false,
     polling: false,
@@ -113,6 +116,7 @@
     chatEmpty: byId("chat-empty"),
     chatInput: byId("chat-input"),
     micButton: byId("mic-button"),
+    micToggle: byId("mic-toggle"),
     sendButton: byId("send-button"),
     stopButton: byId("stop-button"),
     clearChat: byId("clear-chat"),
@@ -230,6 +234,7 @@
     state.mode = data.chat_mode || state.settings.chat_mode || "tasks";
     state.preview = Boolean(data.transcript_preview);
     state.mic = Number(data.mic) || 0;
+    state.micEnabled = data.mic_enabled !== false;
     setStatus(data.status || state.status);
     renderMode();
     renderTelemetry();
@@ -241,6 +246,7 @@
     renderAgent();
     renderJournal();
     renderSettings();
+    renderMicToggle();
     updateMic(state.mic);
     if (data.greeting && state.messages.length === 0) {
       els.chatEmpty.querySelector("b").textContent =
@@ -266,6 +272,10 @@
       state.mic = snapshot.mic;
       reactor.setMic(Math.min(1, snapshot.mic / 0.03));
       updateMic(snapshot.mic);
+    }
+    if (typeof snapshot.mic_enabled === "boolean") {
+      state.micEnabled = snapshot.mic_enabled;
+      renderMicToggle();
     }
     if (snapshot.chat_mode && snapshot.chat_mode !== state.mode) {
       state.mode = snapshot.chat_mode;
@@ -878,7 +888,8 @@
   }
 
   function updateMic(value) {
-    const normalized = Math.min(1, Math.max(0, Number(value) || 0) / 0.03);
+    const raw = state.micEnabled === false ? 0 : Number(value) || 0;
+    const normalized = Math.min(1, Math.max(0, raw / 0.03));
     els.micFill.style.width = Math.round(normalized * 100) + "%";
     els.micValue.textContent = Math.round(normalized * 100) + "%";
   }
@@ -1043,6 +1054,41 @@
     } catch (error) {
       state.mode = previous;
       renderMode();
+      toast(error.message, "error");
+    }
+  }
+
+  function renderMicToggle() {
+    if (!els.micToggle) return;
+    const enabled = state.micEnabled !== false;
+    els.micToggle.textContent = enabled ? "MIC ON" : "MIC OFF";
+    els.micToggle.classList.toggle("off", !enabled);
+    els.micToggle.setAttribute("aria-pressed", enabled ? "true" : "false");
+    els.micToggle.title = enabled
+      ? "Выключить микрофон (шумная комната)"
+      : "Включить микрофон";
+    if (!enabled) {
+      updateMic(0);
+    }
+  }
+
+  async function toggleMicrophone() {
+    const previous = state.micEnabled !== false;
+    state.micEnabled = !previous;
+    renderMicToggle();
+    try {
+      const data = await Api.rpc("set_microphone", {
+        enabled: state.micEnabled,
+      });
+      state.micEnabled = Boolean(data && data.enabled);
+      renderMicToggle();
+      toast(
+        state.micEnabled ? "Микрофон включён." : "Микрофон выключен.",
+        "system"
+      );
+    } catch (error) {
+      state.micEnabled = previous;
+      renderMicToggle();
       toast(error.message, "error");
     }
   }
@@ -1393,6 +1439,9 @@
     });
 
     els.sendButton.addEventListener("click", sendMessage);
+    if (els.micToggle) {
+      els.micToggle.addEventListener("click", toggleMicrophone);
+    }
     els.micButton.addEventListener("click", toggleVoiceInput);
     if (/^https?:$/.test(window.location.protocol) &&
         navigator.mediaDevices && window.MediaRecorder) {

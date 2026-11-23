@@ -113,6 +113,7 @@
       "speaking",
       "error",
       "stopped",
+      "mic_off",
     ].includes(value)
       ? value
       : "ready";
