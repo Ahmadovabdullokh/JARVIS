@@ -501,7 +501,10 @@ JARVIS можно использовать с телефона: Android-прил
 задачи, журнал), а не WebView-ссылка на HUD. Оно подключается к
 тому же backend по HTTPS-туннелю, ПК-версия работает как обычно.
 
-Запуск удалённого режима на ПК:
+При обычном запуске ПК-приложения (`JARVIS.exe`, `scripts\start.ps1`
+или автозапуск) remote-сервер и Telegram-бот поднимаются сами, поэтому
+телефон работает сразу. Отключить автозапуск сервера:
+`remote.auto_start: false` в `config/config.json`.
 
 ```powershell
 scripts\start_all.ps1         # всё сразу: backend + HUD + remote + бот
@@ -511,7 +514,9 @@ scripts\remote_info.ps1       # покажет адрес и токен для �
 ```
 
 - `app/remote_server.py` отдаёт статику `ui/` и RPC `POST /rpc` —
-  тот же протокол, что у pywebview. Слушает только localhost.
+  тот же протокол, что у pywebview. Адрес прослушивания задаётся
+  `remote.host` (`127.0.0.1` — только ПК/туннель, `0.0.0.0` — ещё
+  и телефон по Wi-Fi).
 - Токен доступа хранится в `config.json` → `remote.token`
   (создаётся автоматически, `secrets.token_urlsafe(24)`)
   или задаётся `JARVIS_REMOTE_TOKEN`. Клиент обменивает токен на

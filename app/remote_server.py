@@ -31,6 +31,7 @@ from app.status import get_status
 log = get_logger(__name__)
 
 CHAT_MIRROR_FILE = DATA_DIR / "remote_chat.log"
+STATUS_FILE = DATA_DIR / "remote_status.json"
 MIRROR_EVENT_TYPES = {"user", "assistant", "system", "error"}
 
 
@@ -668,3 +669,22 @@ class RemoteServer:
             self._server.server_close()
         except Exception:
             pass
+
+
+def write_status(server):
+    """Сохраняет адреса сервера для scripts\\remote_info.ps1."""
+    try:
+        STATUS_FILE.write_text(
+            json.dumps(
+                {
+                    "url": server.url,
+                    "lan_url": server.lan_url,
+                    "updated": time.time(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass

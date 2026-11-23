@@ -12,33 +12,16 @@
 или ``scripts\\start_remote.ps1``.
 """
 
-import json
 import sys
 import time
 
 from app import config as config_module
 from app.logging import get_logger
-from app.paths import DATA_DIR, ensure_runtime_dirs
-from app.remote_server import RemoteServer
+from app.paths import ensure_runtime_dirs
+from app.remote_server import RemoteServer, write_status
 from app.ui_bridge import UiBridge
 
 log = get_logger(__name__)
-
-STATUS_FILE = DATA_DIR / "remote_status.json"
-
-
-def _write_status(url, lan_url=""):
-    try:
-        STATUS_FILE.write_text(
-            json.dumps(
-                {"url": url, "lan_url": lan_url, "updated": time.time()},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
 
 
 def main(argv=None):
@@ -71,7 +54,7 @@ def main(argv=None):
     )
     print(banner, flush=True)
     log.info("[REMOTE LAUNCHER] %s", banner.replace("\n", " | "))
-    _write_status(server.url, server.lan_url)
+    write_status(server)
 
     if hud:
         try:

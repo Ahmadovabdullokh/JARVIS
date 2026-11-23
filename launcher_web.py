@@ -465,6 +465,38 @@ def run_web_ui(bridge, smoke=False, debug=False):
     return 0
 
 
+def _start_remote_server(bridge):
+    """Поднимает remote-сервер, чтобы телефон работал при запуске ПК-приложения.
+
+    Отключается через ``remote.auto_start: false`` в config.json.
+    """
+    try:
+        from app import config as config_module
+        from app.remote_server import RemoteServer, write_status
+
+        config = config_module.read_config_file()
+        remote = config.get("remote")
+        remote = remote if isinstance(remote, dict) else {}
+        if remote.get("auto_start", True) is False:
+            log.info("[REMOTE] Автозапуск отключён (remote.auto_start=false).")
+            return None
+        host = str(remote.get("host") or "127.0.0.1").strip() or "127.0.0.1"
+        server = RemoteServer(bridge, host=host)
+        server.start()
+        write_status(server)
+        log.info("[REMOTE] Сервер для телефона запущен: %s", server.url)
+        lan = server.lan_url
+        if lan:
+            log.info("[REMOTE] Для телефона в той же Wi-Fi: %s", lan)
+        return server
+    except Exception as error:
+        log.info(
+            f"[REMOTE] Не удалось запустить сервер: "
+            f"{type(error).__name__}: {error}"
+        )
+        return None
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     smoke = "--smoke" in argv
@@ -495,7 +527,13 @@ def main(argv=None):
 
         return run_tk()
 
-    return run_web_ui(UiBridge(), smoke=smoke, debug=debug)
+    bridge = UiBridge()
+    remote_server = _start_remote_server(bridge)
+    try:
+        return run_web_ui(bridge, smoke=smoke, debug=debug)
+    finally:
+        if remote_server is not None:
+            remote_server.stop()
 
 
 if __name__ == "__main__":

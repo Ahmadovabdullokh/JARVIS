@@ -111,7 +111,8 @@
         "token": "",
         "read_only": true,
         "allowed_methods": [],
-        "host": "127.0.0.1"
+        "host": "127.0.0.1",
+        "auto_start": true
     },
     "tools": {
         "enabled_categories": [],
