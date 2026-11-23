@@ -33,12 +33,10 @@ body::before {
   pointer-events: none;
   content: "";
   background:
-    radial-gradient(circle at 22% 28%, rgba(255, 59, 47, 0.2), transparent 42%),
-    radial-gradient(circle at 76% 18%, rgba(255, 138, 43, 0.16), transparent 38%),
-    radial-gradient(circle at 62% 82%, rgba(255, 201, 77, 0.12), transparent 44%);
-  filter: blur(70px);
-  opacity: 0.75;
-  animation: aurora-drift 32s ease-in-out infinite alternate;
+    radial-gradient(circle at 22% 28%, rgba(255, 59, 47, 0.16), transparent 42%),
+    radial-gradient(circle at 76% 18%, rgba(255, 138, 43, 0.12), transparent 38%),
+    radial-gradient(circle at 62% 82%, rgba(255, 201, 77, 0.09), transparent 44%);
+  opacity: 0.6;
 }
 
 body::after {
@@ -59,18 +57,7 @@ body::after {
     ),
     radial-gradient(ellipse at center, transparent 50%, rgba(4, 0, 0, 0.66) 100%);
   background-size: 46px 46px, 46px 46px, auto, auto;
-  mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 100%);
   opacity: 0.9;
-}
-
-.grain {
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  opacity: 0.05;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 .embers {
@@ -99,19 +86,13 @@ body::after {
 }
 
 .embers span:nth-child(1) { left: 4%; animation-duration: 19s; animation-delay: 0s; }
-.embers span:nth-child(2) { left: 12%; animation-duration: 26s; animation-delay: 3s; }
-.embers span:nth-child(3) { left: 19%; animation-duration: 22s; animation-delay: 7s; }
-.embers span:nth-child(4) { left: 27%; animation-duration: 30s; animation-delay: 1.5s; }
-.embers span:nth-child(5) { left: 34%; animation-duration: 17s; animation-delay: 10s; }
-.embers span:nth-child(6) { left: 42%; animation-duration: 24s; animation-delay: 5s; }
-.embers span:nth-child(7) { left: 49%; animation-duration: 28s; animation-delay: 12s; }
-.embers span:nth-child(8) { left: 57%; animation-duration: 20s; animation-delay: 2s; }
-.embers span:nth-child(9) { left: 64%; animation-duration: 31s; animation-delay: 8s; }
-.embers span:nth-child(10) { left: 71%; animation-duration: 18s; animation-delay: 14s; }
-.embers span:nth-child(11) { left: 78%; animation-duration: 25s; animation-delay: 4s; }
-.embers span:nth-child(12) { left: 85%; animation-duration: 21s; animation-delay: 9s; }
-.embers span:nth-child(13) { left: 91%; animation-duration: 29s; animation-delay: 6s; }
-.embers span:nth-child(14) { left: 97%; animation-duration: 23s; animation-delay: 11s; }
+.embers span:nth-child(2) { left: 16%; animation-duration: 26s; animation-delay: 3s; }
+.embers span:nth-child(3) { left: 28%; animation-duration: 22s; animation-delay: 7s; }
+.embers span:nth-child(4) { left: 40%; animation-duration: 30s; animation-delay: 1.5s; }
+.embers span:nth-child(5) { left: 52%; animation-duration: 17s; animation-delay: 10s; }
+.embers span:nth-child(6) { left: 64%; animation-duration: 24s; animation-delay: 5s; }
+.embers span:nth-child(7) { left: 78%; animation-duration: 28s; animation-delay: 12s; }
+.embers span:nth-child(8) { left: 92%; animation-duration: 20s; animation-delay: 2s; }
 
 button,
 input,
@@ -355,21 +336,6 @@ select:focus-visible {
   }
 }
 
-@keyframes aurora-drift {
-  0% {
-    transform: translate3d(-3%, -2%, 0) scale(1);
-    opacity: 0.6;
-  }
-  50% {
-    transform: translate3d(4%, 3%, 0) scale(1.08);
-    opacity: 0.85;
-  }
-  100% {
-    transform: translate3d(-2%, 4%, 0) scale(1.03);
-    opacity: 0.7;
-  }
-}
-
 @keyframes ember-rise {
   0% {
     opacity: 0;
@@ -412,6 +378,22 @@ select:focus-visible {
   100% {
     transform: translateX(320%);
   }
+}
+
+body.perf-lite .embers,
+body.perf-lite .reactor-scan,
+body.perf-lite .titlebar::after,
+body.perf-lite .context-ring,
+body.perf-lite .empty-orbit,
+body.perf-lite .typing-indicator i,
+body.perf-lite .boot-reactor i,
+body.perf-lite .boot-bar span,
+body.perf-lite .status-dot.starting {
+  animation: none;
+}
+
+body.perf-lite .embers {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

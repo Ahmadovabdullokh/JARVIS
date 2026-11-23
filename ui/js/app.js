@@ -162,6 +162,7 @@
     setDryRun: byId("set-dry-run"),
     setTaint: byId("set-taint"),
     setPreview: byId("set-preview"),
+    setPerfLite: byId("set-perf-lite"),
     setCategory: byId("set-category"),
     setMaxTools: byId("set-max-tools"),
     setCodeTools: byId("set-code-tools"),
@@ -477,6 +478,32 @@
     if (splash) {
       splash.classList.add("done");
     }
+  }
+
+  function applyPerfLite(enabled) {
+    const active = Boolean(enabled);
+    document.body.classList.toggle("perf-lite", active);
+    if (els.setPerfLite) {
+      els.setPerfLite.checked = active;
+    }
+    try {
+      localStorage.setItem("jarvis.lite", active ? "1" : "0");
+    } catch (error) {
+      /* storage is optional */
+    }
+    if (reactor.setLite) {
+      reactor.setLite(active);
+    }
+  }
+
+  function initPerfLite() {
+    let enabled = false;
+    try {
+      enabled = localStorage.getItem("jarvis.lite") === "1";
+    } catch (error) {
+      enabled = false;
+    }
+    applyPerfLite(enabled);
   }
 
   function appendMessage(role, value) {
@@ -1569,6 +1596,10 @@
       setPreview(els.setPreview.checked);
     });
 
+    els.setPerfLite.addEventListener("change", function () {
+      applyPerfLite(els.setPerfLite.checked);
+    });
+
     els.tasksRefresh.addEventListener("click", refreshTasks);
     els.journalRefresh.addEventListener("click", refreshJournal);
     els.journalAudit.addEventListener("click", openAudit);
@@ -1648,6 +1679,7 @@
 
   function init() {
     wireEvents();
+    initPerfLite();
     document.body.dataset.page = state.page;
     reactor.start();
     tick();

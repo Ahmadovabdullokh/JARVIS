@@ -296,7 +296,6 @@ body[data-status="mic_off"] .titlebar-live {
   width: 100%;
   height: auto;
   aspect-ratio: 1;
-  filter: drop-shadow(0 0 18px rgba(255, 110, 60, 0.18));
 }
 
 .reactor-scan {
@@ -306,7 +305,6 @@ body[data-status="mic_off"] .titlebar-live {
   background: linear-gradient(180deg, transparent, rgba(255, 201, 77, 0.1), transparent);
   border-radius: 50%;
   animation: scan 5s linear infinite;
-  mix-blend-mode: screen;
 }
 
 .reactor-caption {

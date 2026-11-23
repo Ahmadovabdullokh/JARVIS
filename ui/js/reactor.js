@@ -18,9 +18,9 @@
       this.mic = 0;
       this.time = 0;
       this.started = 0;
-      this.particles = Array.from({ length: 34 }, (_, index) => ({
-        angle: (index / 34) * Math.PI * 2,
-        radius: 74 + (index % 9) * 5,
+      this.particles = Array.from({ length: 22 }, (_, index) => ({
+        angle: (index / 22) * Math.PI * 2,
+        radius: 74 + (index % 8) * 5,
         speed: 0.05 + (index % 6) * 0.02,
         size: 0.7 + (index % 5) * 0.4,
       }));
@@ -34,7 +34,7 @@
 
     resize() {
       const rect = this.canvas.getBoundingClientRect();
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = Math.min(1.5, window.devicePixelRatio || 1);
       this.width = Math.max(160, rect.width || 220);
       this.height = this.width;
       this.canvas.width = Math.round(this.width * dpr);
@@ -54,6 +54,12 @@
       this.mic = Math.max(0, Math.min(1, Number(value) || 0));
     }
 
+    setLite(value) {
+      this.lite = Boolean(value);
+      this.lastDraw = 0;
+      this.draw();
+    }
+
     start() {
       if (this.started) return;
       this.started = performance.now();
@@ -62,7 +68,10 @@
 
     frame(now) {
       this.time = (now - this.started) / 1000;
-      if (!document.hidden) {
+      if (!document.hidden &&
+          (!this.lastDraw ||
+           now - this.lastDraw >= (this.lite ? 120 : 33))) {
+        this.lastDraw = now;
         this.draw();
       }
       requestAnimationFrame(this.frame);
@@ -129,7 +138,7 @@
       ctx.setLineDash([]);
       ctx.restore();
 
-      const segments = 12;
+      const segments = 9;
       ctx.save();
       ctx.rotate(-t * 0.3);
       for (let index = 0; index < segments; index += 1) {
@@ -191,12 +200,9 @@
       core.addColorStop(0.72, this.alpha(color, 0.3));
       core.addColorStop(1, this.alpha(color, 0.01));
       ctx.fillStyle = core;
-      ctx.shadowColor = "#bfefff";
-      ctx.shadowBlur = 30 + this.mic * 12;
       ctx.beginPath();
       ctx.arc(0, 0, pulse * 2.2, 0, Math.PI * 2);
       ctx.fill();
-      ctx.shadowBlur = 0;
 
       ctx.strokeStyle = this.alpha("#ffe7ab", 0.85);
       ctx.lineWidth = 1.4;
@@ -226,8 +232,6 @@
 
       const marker = t * 1.5;
       ctx.fillStyle = "#ecfcff";
-      ctx.shadowColor = "#bfefff";
-      ctx.shadowBlur = 14;
       ctx.beginPath();
       ctx.arc(
         Math.cos(marker) * 100,
@@ -237,11 +241,10 @@
         Math.PI * 2
       );
       ctx.fill();
-      ctx.shadowBlur = 0;
 
       ctx.restore();
 
-      const count = 27;
+      const count = 21;
       const spacing = (width - 60) / (count - 1);
       const startX = 30;
       const baseY = height - 16;
