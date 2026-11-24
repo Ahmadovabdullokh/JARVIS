@@ -89,6 +89,7 @@
     toolCount: 0,
     lastAnswer: "",
     streamIndex: null,
+    code: null,
   };
 
   const els = {
@@ -151,6 +152,10 @@
     journalClear: byId("journal-clear"),
     agentTimeline: byId("agent-timeline"),
     agentEmpty: byId("agent-empty"),
+    codePanel: byId("code-panel"),
+    codePlanList: byId("code-plan-list"),
+    codeFiles: byId("code-files"),
+    codeChecks: byId("code-checks"),
     agentStatus: byId("agent-status"),
     agentIterations: byId("agent-iterations"),
     agentTools: byId("agent-tools"),
@@ -339,6 +344,10 @@
       case "command_catalog":
         state.catalog = Array.isArray(payload) ? payload : [];
         renderCatalog();
+        break;
+      case "code_state":
+        state.code = payload && typeof payload === "object" ? payload : null;
+        renderAgent();
         break;
       case "llm_iteration":
         state.iterations = Math.max(
@@ -687,6 +696,72 @@
     els.agentIterations.textContent = String(state.iterations);
     els.agentTools.textContent = String(state.toolCount);
     els.agentLast.textContent = state.lastAnswer || "—";
+    renderCodeState();
+  }
+
+  function renderCodeState() {
+    const data = state.code;
+    if (!data || !els.codePanel) {
+      if (els.codePanel) els.codePanel.hidden = true;
+      return;
+    }
+    els.codePanel.hidden = false;
+    const markers = {
+      pending: "[ ]",
+      running: "[~]",
+      done: "[x]",
+      failed: "[!]",
+      blocked: "[#]",
+    };
+    const plan = Array.isArray(data.plan) ? data.plan : [];
+    els.codePlanList.innerHTML = "";
+    if (!plan.length) {
+      els.codePlanList.textContent = data.goal || "План пока не составлен.";
+    } else {
+      plan.forEach(function (item, index) {
+        const row = document.createElement("div");
+        row.className = "code-row";
+        row.textContent =
+          (index + 1) +
+          ". " +
+          (markers[item.status] || "[ ]") +
+          " " +
+          String(item.step || "");
+        els.codePlanList.appendChild(row);
+      });
+    }
+    const files = Array.isArray(data.changed_files)
+      ? data.changed_files
+      : [];
+    els.codeFiles.innerHTML = "";
+    if (!files.length) {
+      els.codeFiles.textContent = "Изменений пока нет.";
+    } else {
+      files.slice(-12).forEach(function (path) {
+        const row = document.createElement("div");
+        row.className = "code-row";
+        row.textContent = String(path);
+        els.codeFiles.appendChild(row);
+      });
+    }
+    const checks = Array.isArray(data.checks) ? data.checks : [];
+    els.codeChecks.innerHTML = "";
+    if (!checks.length) {
+      els.codeChecks.textContent = data.verified
+        ? "Проверено."
+        : "Проверок пока нет.";
+    } else {
+      checks.slice(-5).forEach(function (item) {
+        const row = document.createElement("div");
+        row.className = "code-row " + (item.ok ? "ok" : "fail");
+        row.textContent =
+          (item.ok ? "[OK] " : "[FAIL] ") +
+          String(item.name || "check") +
+          " — " +
+          String(item.detail || "").slice(0, 220);
+        els.codeChecks.appendChild(row);
+      });
+    }
   }
 
   function renderContextTools() {

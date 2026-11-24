@@ -15,6 +15,7 @@ import pygetwindow as gw
 import pyperclip
 import requests
 
+from app.code_state import CodeAgentState
 from app.logging import get_logger
 from app.memory import Memory
 from app.observability import tracer
@@ -324,6 +325,7 @@ class PCAgent:
         self.memory = Memory()
         self.safety = SafetyManager(self.config)
         self.tasks = TaskManager()
+        self.code_state = CodeAgentState()
         self.registry = ToolRegistry(
             context=ToolContext(
                 agent=self,
@@ -331,6 +333,7 @@ class PCAgent:
                 memory=self.memory,
                 safety=self.safety,
                 tasks=self.tasks,
+                code_state=self.code_state,
             ),
             safety=self.safety,
         )
@@ -3181,27 +3184,30 @@ class PCAgent:
         limit = max(8, min(int(limit or 28), 40))
 
         core_names = [
-            "code_tree",
+            "code_plan",
+            "code_plan_update",
             "code_project_snapshot",
             "code_glob",
             "code_grep",
             "code_read",
             "code_read_many",
-            "code_write",
             "code_edit",
             "code_multi_edit",
+            "code_verify",
+            "code_write",
             "code_apply_patch",
+            "code_test",
+            "code_lint",
             "code_diff",
             "code_git_summary",
             "code_run",
-            "code_test",
-            "code_lint",
-            "code_format",
+            "code_tree",
             "code_project_info",
             "code_symbols",
             "code_find_references",
-            "run_powershell",
-            "run_python",
+            "code_checkpoint",
+            "code_rollback",
+            "code_find_file",
             "list_capabilities",
             "describe_capability",
             "run_capability",

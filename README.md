@@ -39,19 +39,29 @@
   `code` конфига: `project`, `backend`, `max_iterations`, `cli_args`,
   `timeout`, `fallback`. Режим применяется к тексту и голосу,
   сохраняется в конфиге (`chat_mode`).
-- Инструменты кодинг-агента: `code_project_snapshot`, `code_tree`,
-  `code_glob`, `code_grep`, `code_read`, `code_read_many`,
-  `code_write`, `code_edit`, `code_multi_edit`, `code_apply_patch`,
-  `code_diff`, `code_git_summary`, `code_run`, `code_test`,
-  `code_lint`, `code_format`, `code_project_info`, `code_symbols`,
-  `code_find_references`, `code_todos`, `code_dependencies`.
-  `code_project_snapshot` и `code_read_many` уменьшают число шагов,
-  а `code_edit` / `code_multi_edit` дают точечные правки, как в
-  Codex, OpenCode и Claude Code.
-- Для скорости агент читает файлы пакетно, использует до 60 шагов
+- Инструменты кодинг-агента: `code_plan`, `code_plan_update`,
+  `code_project_snapshot`, `code_tree`, `code_glob`, `code_grep`,
+  `code_read`, `code_read_many`, `code_write`, `code_edit`,
+  `code_multi_edit`, `code_apply_patch`, `code_verify`, `code_diff`,
+  `code_git_summary`, `code_run`, `code_test`, `code_lint`,
+  `code_project_info`, `code_symbols`, `code_find_references`,
+  `code_todos`, `code_dependencies`, `code_checkpoint`, `code_rollback`.
+- Агент сначала строит план, читает файл перед правкой, блокирует
+  повторные одинаковые вызовы, делает транзакционные multi-edit и
+  автоматически запускает `code_verify` (compileall/ruff/тесты).
+- `code_project_snapshot` добавляет правила проекта (`AGENTS.md`,
+  `CLAUDE.md`), git-состояние и команды тестов; `code_read_many` и
+  `code_edit` уменьшают число шагов.
+- Для скорости агент читает файлы пакетно, использует до 80 шагов
   в режиме кода, а результаты инструментов не обрезаются до
-  нескольких строк. При исчерпании шагов вместо пустой ошибки
-  возвращается отчёт: что сделано, что осталось и следующий шаг.
+  нескольких строк. При исчерпании шагов или отсутствии прогресса
+  вместо пустой ошибки возвращается отчёт.
+- Автопилот кода включается через `code.autopilot` (по умолчанию
+  true): правки внутри проекта не требуют подтверждений. Секреты,
+  запись вне проекта, `git reset --hard`, force push и массовое
+  удаление блокируются; commit/push отключены до `code.allow_git_write`.
+- `code_checkpoint` / `code_rollback` откатывают изменения текущей
+  задачи. Состояние плана и проверок сохраняется в `data/code_state.json`.
 - Вкладка «АГЕНТ»: карточка проекта, модель/провайдер, кнопки
   проверки проекта, тестов, линта, карты проекта и git, а также
   каталог доступных кодинг-инструментов.
@@ -276,9 +286,10 @@ Whisper. Для подсказки распознавателю использу
 
 ## Голос
 
-По умолчанию используется `en-US-AndrewMultilingualNeural`, потому что
+По умолчанию используется `en-US-BrianMultilingualNeural`, потому что
 он корректно озвучивает русский текст. Голос и pitch меняются через
 `tts.voice`, `tts.pitch`, `tts.rate` и `tts.voices` в конфиге.
+Используются только мужские голоса: женские fallback отключены.
 При недоступности Edge TTS JARVIS сообщит об ошибке в HUD и продолжит
 работу без озвучки.
 

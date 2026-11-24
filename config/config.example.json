@@ -59,11 +59,12 @@
         "session_history": 20
     },
     "memory_size": 50,
-    "tts_rate": 185,
-    "tts_voice": "ru-RU-DmitryNeural",
-    "tts_pitch": "-8Hz",
+    "tts_rate": 175,
+    "tts_voice": "en-US-BrianMultilingualNeural",
+    "tts_pitch": "-12Hz",
     "tts_voices": [
-        "ru-RU-DmitryNeural"
+        "en-US-BrianMultilingualNeural",
+        "en-US-AndrewMultilingualNeural"
     ],
     "tts_offline_fallback": true,
     "tts_output_device": "",
@@ -97,7 +98,7 @@
         "enabled": true,
         "backend": "deepseek",
         "project": "",
-        "max_iterations": 60,
+        "max_iterations": 80,
         "max_tokens": 8000,
         "parallel_tool_calls": true,
         "compact_max_chars": 24000,
@@ -105,7 +106,11 @@
             "--allow-all-tools"
         ],
         "timeout": 900,
-        "fallback": true
+        "fallback": true,
+        "autopilot": true,
+        "verify_tests": true,
+        "allow_outside_project": false,
+        "allow_git_write": false
     },
     "remote": {
         "token": "",

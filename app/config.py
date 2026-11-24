@@ -53,12 +53,16 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "backend": "deepseek",
         "project": "",
-        "max_iterations": 60,
+        "max_iterations": 80,
         "max_tokens": 8000,
         "parallel_tool_calls": True,
         "compact_max_chars": 24000,
         "timeout": 900,
         "fallback": True,
+        "autopilot": True,
+        "verify_tests": True,
+        "allow_outside_project": False,
+        "allow_git_write": False,
     },
     "llm": {
         "provider": "deepseek",
@@ -450,7 +454,7 @@ def get_tts_config(config: dict) -> dict:
     voice = str(
         tts.get(
             "voice",
-            config.get("tts_voice", "en-US-AndrewMultilingualNeural"),
+            config.get("tts_voice", "en-US-BrianMultilingualNeural"),
         )
     )
 
@@ -466,7 +470,7 @@ def get_tts_config(config: dict) -> dict:
     return {
         "rate": int(tts.get("rate", config.get("tts_rate", 175))),
         "voice": voice,
-        "pitch": str(tts.get("pitch", config.get("tts_pitch", "-8Hz"))),
+        "pitch": str(tts.get("pitch", config.get("tts_pitch", "-12Hz"))),
         "voices": [str(item) for item in voices],
         "output_device": str(device or "").strip() or None,
         "stream_sentences": bool(

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 from app.logging import get_logger
+from app.safety import redact_secrets
 
 log = get_logger(__name__)
 
@@ -814,11 +815,12 @@ class LLMClient:
         raw_arguments = function.get("arguments", "{}")
         started = time.time()
 
-        log.info(f"[LLM TOOL] {name} {raw_arguments}")
+        safe_arguments = redact_secrets(str(raw_arguments))
+        log.info(f"[LLM TOOL] {name} {safe_arguments}")
         self._emit(
             "tool_call",
             name=name,
-            arguments=raw_arguments,
+            arguments=safe_arguments,
         )
 
         arguments = {}
@@ -898,6 +900,7 @@ class LLMClient:
         max_tokens=None,
         parallel_tool_calls=None,
         compact_max_chars=None,
+        code_state=None,
     ):
         if not self.use_llm or (
             not self.api_key and not self.allow_without_key
@@ -905,6 +908,13 @@ class LLMClient:
             return ""
 
         messages = self._messages(system, prompt)
+        state_message = None
+        if code_state is not None and getattr(code_state, "active", False):
+            state_message = {
+                "role": "system",
+                "content": code_state.prompt(),
+            }
+            messages.insert(1, state_message)
         max_iterations = max(1, int(max_iterations or 18))
         request_tools = tools
         request_max_tokens = max(256, int(max_tokens or self.max_tokens))
@@ -913,6 +923,38 @@ class LLMClient:
         )
         compact_limit = max(2000, int(compact_max_chars or 10000))
         budget_notified = set()
+        call_counts = {}
+        no_progress = 0
+        last_revision = None
+        auto_verify_attempts = 0
+
+        def sync_state_message():
+            if state_message is None:
+                return
+            try:
+                state_message["content"] = code_state.prompt()
+            except Exception:
+                pass
+
+        def signature(tool_call):
+            function = tool_call.get("function", {})
+            name = str(function.get("name", ""))
+            raw = function.get("arguments", "{}")
+            try:
+                parsed = (
+                    raw
+                    if isinstance(raw, dict)
+                    else json.loads(raw or "{}")
+                )
+                normalized = json.dumps(
+                    parsed,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+            except (ValueError, TypeError):
+                normalized = str(raw)
+            return f"{name}:{normalized}"
 
         if task_manager is not None and task_id:
             try:
@@ -941,6 +983,35 @@ class LLMClient:
             )
 
             self._compact_tool_messages(messages, max_chars=compact_limit)
+            sync_state_message()
+            if code_state is not None and getattr(
+                code_state,
+                "active",
+                False,
+            ):
+                revision = int(getattr(code_state, "revision", 0) or 0)
+                if last_revision is not None and revision == last_revision:
+                    no_progress += 1
+                else:
+                    no_progress = 0
+                last_revision = revision
+                if no_progress in {5, 8}:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[Система] Нет прогресса: файлы и план не "
+                            "меняются. Смени подход: прочитай нужный "
+                            "фрагмент, сделай code_edit и code_verify."
+                        ),
+                    })
+                if no_progress >= 12:
+                    message = (
+                        "Остановлено: агент не продвигается по задаче. "
+                        "Измените формулировку или проверьте проект."
+                    )
+                    if task_manager is not None and task_id:
+                        task_manager.fail(task_id, message)
+                    return message
 
             for threshold in (0.75, 0.9):
                 if (
@@ -994,7 +1065,50 @@ class LLMClient:
             tool_calls = message.get("tool_calls") or []
 
             if not tool_calls:
+                active = code_state is not None and getattr(
+                    code_state,
+                    "active",
+                    False,
+                )
+                changed = bool(
+                    active and getattr(code_state, "changed_files", [])
+                )
+                verified = bool(
+                    active and getattr(code_state, "verified", False)
+                )
+                if changed and not verified and auto_verify_attempts < 2:
+                    auto_verify_attempts += 1
+                    self._emit(
+                        "tool_call",
+                        name="code_verify",
+                        arguments="{}",
+                    )
+                    try:
+                        verify_result = tool_executor("code_verify", {})
+                    except Exception as error:
+                        verify_result = f"Ошибка автопроверки: {error}"
+                    self._emit(
+                        "tool_result",
+                        name="code_verify",
+                        result=str(verify_result)[:2000],
+                        elapsed=0.0,
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[АВТОПРОВЕРКА] Результат code_verify:\n"
+                            f"{verify_result}\n"
+                            "Если есть ошибки — исправь их. "
+                            "Если всё чисто — дай финальный отчёт."
+                        ),
+                    })
+                    sync_state_message()
+                    continue
                 answer = (message.get("content") or "").strip()
+                if changed and not verified:
+                    answer += (
+                        "\n\n[Внимание] Проверка изменений не пройдена."
+                    )
                 if answer:
                     self._append_history(prompt, answer)
                 self._emit("answer", text=answer)
@@ -1010,6 +1124,49 @@ class LLMClient:
             })
 
             results = []
+            signatures = [signature(item) for item in tool_calls]
+            planned_counts = {}
+            for item in signatures:
+                planned_counts[item] = planned_counts.get(item, 0) + 1
+            blocked_any = any(
+                call_counts.get(item, 0) + count > 2
+                for item, count in planned_counts.items()
+            )
+
+            def execute_one(tool_call):
+                sig = signature(tool_call)
+                runs = call_counts.get(sig, 0) + 1
+                call_counts[sig] = runs
+                if runs > 2:
+                    name = tool_call.get("function", {}).get("name", "")
+                    log.info(
+                        f"[LLM TOOL] Повторный вызов {name} заблокирован."
+                    )
+                    self._emit(
+                        "tool_result",
+                        name=name,
+                        result="Повторный вызов заблокирован.",
+                        elapsed=0.0,
+                    )
+                    return {
+                        "cancelled": False,
+                        "name": name,
+                        "tool_call_id": tool_call.get("id", ""),
+                        "content": (
+                            "Ошибка: этот вызов уже выполнялся дважды "
+                            "с теми же аргументами. Повтор заблокирован. "
+                            "Используй результат из истории или смени "
+                            "подход."
+                        ),
+                        "elapsed": 0.0,
+                    }
+                return self._run_tool_call(
+                    tool_call,
+                    tool_executor,
+                    task_manager,
+                    task_id,
+                )
+
             can_parallel = (
                 effective_parallel and len(tool_calls) > 1
             )
@@ -1020,19 +1177,13 @@ class LLMClient:
                     )
                     for tool_call in tool_calls
                 )
-            if can_parallel:
+            if can_parallel and not blocked_any:
                 with ThreadPoolExecutor(
                     max_workers=min(4, len(tool_calls)),
                     thread_name_prefix="JARVIS-LLMTool",
                 ) as executor:
                     futures = [
-                        executor.submit(
-                            self._run_tool_call,
-                            tool_call,
-                            tool_executor,
-                            task_manager,
-                            task_id,
-                        )
+                        executor.submit(execute_one, tool_call)
                         for tool_call in tool_calls
                     ]
                     results = [future.result() for future in futures]
@@ -1040,14 +1191,7 @@ class LLMClient:
                 for tool_call in tool_calls:
                     if self._cancelled():
                         return "Выполнение остановлено пользователем."
-                    results.append(
-                        self._run_tool_call(
-                            tool_call,
-                            tool_executor,
-                            task_manager,
-                            task_id,
-                        )
-                    )
+                    results.append(execute_one(tool_call))
 
             for item in results:
                 if item.get("cancelled"):
@@ -1063,6 +1207,7 @@ class LLMClient:
                     "name": item["name"],
                     "content": item["content"],
                 })
+            sync_state_message()
 
         final_answer = ""
         if not self._cancelled():

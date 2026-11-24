@@ -45,6 +45,13 @@ class RedactFilterTests(unittest.TestCase):
         _RedactFilter().filter(record)
         self.assertNotIn("leak", record.getMessage())
 
+    def test_telegram_token_redacted(self):
+        token = "123456789:" + "A" * 35
+        record = _record(f"bot token {token} end")
+        _RedactFilter().filter(record)
+        self.assertNotIn(token, record.getMessage())
+        self.assertIn("***", record.getMessage())
+
     def test_normal_text_untouched(self):
         record = _record("Токен создан, всё хорошо")
         _RedactFilter().filter(record)

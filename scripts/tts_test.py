@@ -21,20 +21,25 @@ from app.config import get_tts_config, load_config  # noqa: E402
 from app.tts import TTS  # noqa: E402
 
 
-async def _probe(voice, text, timeout=20):
+async def _probe(voice, text, pitch="-12Hz"):
     total = 0
+    first_audio_at = None
     started = time.monotonic()
     communicate = edge_tts.Communicate(
         text=text,
         voice=voice,
         rate="+0%",
         volume="+0%",
-        pitch="-8Hz",
+        pitch=pitch,
+        connect_timeout=6,
+        receive_timeout=20,
     )
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             total += len(chunk["data"])
-    return total, time.monotonic() - started
+            if first_audio_at is None:
+                first_audio_at = time.monotonic() - started
+    return total, first_audio_at, time.monotonic() - started
 
 
 def main():
@@ -54,13 +59,16 @@ def main():
     if not args.offline:
         for voice in voices:
             try:
-                size, elapsed = asyncio.run(
+                size, first_audio, elapsed = asyncio.run(
                     asyncio.wait_for(
-                        _probe(voice, args.text),
+                        _probe(voice, args.text, config["pitch"]),
                         timeout=25,
                     )
                 )
-                status = f"OK, {size} байт за {elapsed:.1f} c"
+                status = (
+                    f"OK, {size} байт, первое аудио "
+                    f"{first_audio:.1f} c, всего {elapsed:.1f} c"
+                )
             except Exception as error:
                 status = f"ОШИБКА {type(error).__name__}: {error}"
             print(f"  {voice}: {status}")

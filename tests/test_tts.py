@@ -1,8 +1,9 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
 from app.main import get_tts_config
-from app.tts import TTS, split_sentences
+from app.tts import TTS, _is_male_offline_voice, split_sentences
 
 
 class TTSTests(unittest.TestCase):
@@ -61,10 +62,9 @@ class TTSTests(unittest.TestCase):
         self.assertEqual(
             tts.voices,
             [
-                "en-US-AndrewMultilingualNeural",
+                "en-US-BrianMultilingualNeural",
                 "en-US-AndrewNeural",
-                "ru-RU-DmitryNeural",
-                "ru-RU-SvetlanaNeural",
+                "en-US-AndrewMultilingualNeural",
             ],
         )
 
@@ -73,11 +73,96 @@ class TTSTests(unittest.TestCase):
 
         self.assertEqual(
             tts.voice,
-            "en-US-AndrewMultilingualNeural",
+            "en-US-BrianMultilingualNeural",
         )
         self.assertEqual(
             get_tts_config({})["voice"],
-            "en-US-AndrewMultilingualNeural",
+            "en-US-BrianMultilingualNeural",
+        )
+        self.assertEqual(get_tts_config({})["pitch"], "-12Hz")
+
+    def test_blocked_voices_are_skipped(self):
+        tts = TTS(
+            voice="ru-RU-DmitryNeural",
+            voices=["ru-RU-SvetlanaNeural"],
+        )
+
+        self.assertEqual(
+            tts.voices,
+            [
+                "en-US-BrianMultilingualNeural",
+                "en-US-AndrewMultilingualNeural",
+            ],
+        )
+
+    def test_failed_voice_is_skipped_on_next_utterance(self):
+        tts = TTS(
+            voice="en-US-AndrewMultilingualNeural",
+            voices=["en-US-BrianMultilingualNeural"],
+            offline_fallback=False,
+        )
+        calls = []
+
+        async def fake_speak(text, voice):
+            calls.append(voice)
+            if voice == "en-US-AndrewMultilingualNeural":
+                raise RuntimeError("temporary failure")
+
+        with patch.object(tts, "_speak_async", side_effect=fake_speak):
+            self.assertTrue(tts.speak("Первый раз"))
+            self.assertTrue(tts.speak("Второй раз"))
+
+        self.assertEqual(
+            calls,
+            [
+                "en-US-AndrewMultilingualNeural",
+                "en-US-BrianMultilingualNeural",
+                "en-US-BrianMultilingualNeural",
+            ],
+        )
+
+    def test_multi_sentence_text_uses_one_stream(self):
+        tts = TTS()
+        calls = []
+
+        async def fake_stream(text, voice):
+            calls.append((text, voice))
+
+        with patch.object(tts, "_stream_sentence", new=fake_stream):
+            asyncio.run(
+                tts._speak_async(
+                    "Первое. Второе! Третье?",
+                    "en-US-AndrewMultilingualNeural",
+                )
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "Первое. Второе! Третье?",
+                    "en-US-AndrewMultilingualNeural",
+                )
+            ],
+        )
+
+    def test_offline_voice_must_be_male(self):
+        class Voice:
+            def __init__(self, name):
+                self.id = name
+                self.name = name
+                self.gender = None
+                self.languages = []
+
+        self.assertFalse(
+            _is_male_offline_voice(
+                Voice("Microsoft Irina Desktop - Russian")
+            )
+        )
+        self.assertTrue(
+            _is_male_offline_voice(
+                Voice("Microsoft Pavel - Russian")
+            )
         )
 
     def test_tts_voice_can_be_configured(self):

@@ -63,11 +63,12 @@ WinForms, из-за чего импорт модуля падал. Патч об
 
 ## Голос и LLM
 
-- TTS (`app/tts.py`): стриминг по предложениям (`split_sentences`),
-  `stop()` для barge-in, `output_device` по имени/индексу из
-  `tts_output_device`. Голоса перебираются с 2 попытками и паузой;
-  `FALLBACK_VOICES` — Dmitry/Svetlana/Andrew (Guy отдаёт NoAudioReceived).
-  Диагностика: `python scripts/tts_test.py [--speak|--offline]`.
+- TTS (`app/tts.py`): один Edge-стрим на весь текст, `stop()` для
+  barge-in, `output_device` по имени/индексу из `tts_output_device`.
+  Только мужские голоса (`FALLBACK_VOICES` — Brian/Andrew); женские
+  и Dmitry заблокированы. Одна попытка на голос, неудачные голоса
+  кешируются на 10 минут. Диагностика:
+  `python scripts/tts_test.py [--speak|--offline]`.
 - Barge-in: `voice_barge_in` в конфиге (default off — динамики
   попадают в микрофон, лучше с наушниками).
 - `speak_text` — озвучка текстовых ответов (default on).
@@ -76,6 +77,21 @@ WinForms, из-за чего импорт модуля падал. Патч об
 - Circuit breaker в `LLMClient._circuit` (3 сбоя → 300 c паузы).
 - Секреты: keyring-сервис `jarvis` — fallback после env/config
   (`_keyring_secret` в `app/config.py`).
+
+## Кодовый агент
+
+- Кодовая задача хранится в `app/code_state.py` и `data/code_state.json`:
+  план, изменённые файлы, проверки, checkpoint/rollback.
+- Перед правкой нужен `code_plan` и `code_read`; `run_python` /
+  `run_powershell` не входят в набор code-режима.
+- `LLMClient.ask_with_tools(code_state=...)` блокирует повторные
+  вызовы, следит за отсутствием прогресса и автоматически запускает
+  `code_verify` перед финальным ответом.
+- Автопилот включается `code.autopilot`; вне проекта писать нельзя
+  (`code.allow_outside_project`), commit/push — только при
+  `code.allow_git_write`.
+- Секреты вырезаются из логов/аргументов; `code_write` и `code_edit`
+  блокируют вставку токенов.
 
 ## Проверки
 

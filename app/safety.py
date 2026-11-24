@@ -17,6 +17,17 @@ SECRET_VALUE_RES = (
     re.compile(r"\b(gsk_[A-Za-z0-9_\-]{10,})\b"),
     re.compile(r"\b(sk-[A-Za-z0-9_\-]{10,})\b"),
     re.compile(r"\b(Bearer\s+)[A-Za-z0-9._\-]{10,}", re.IGNORECASE),
+    re.compile(r"\b\d{8,12}:[A-Za-z0-9_\-]{30,}\b"),
+    re.compile(
+        r"https://(?:discord|discordapp)\.com/api/webhooks/\S+",
+        re.IGNORECASE,
+    ),
+    re.compile(r"https://hooks\.slack\.com/services/\S+", re.IGNORECASE),
+    re.compile(
+        r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----.*?"
+        r"-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----",
+        re.DOTALL,
+    ),
 )
 
 SECRET_KV_RE = re.compile(
@@ -25,6 +36,32 @@ SECRET_KV_RE = re.compile(
     r"(\s*[\"']?\s*[:=]\s*[\"']?)"
     r"([^\s,;\"'}]+)"
 )
+
+
+def contains_secret(text):
+    value = str(text or "")
+    return any(pattern.search(value) for pattern in SECRET_VALUE_RES)
+
+
+def redact_secrets(text):
+    text = str(text or "")
+    text = SECRET_KV_RE.sub(
+        lambda match: match.group(1) + match.group(2) + "***",
+        text,
+    )
+    for pattern in SECRET_VALUE_RES:
+        if pattern.groups:
+            text = pattern.sub(
+                lambda match: (
+                    match.group(1) + "***"
+                    if match.lastindex
+                    else "***"
+                ),
+                text,
+            )
+        else:
+            text = pattern.sub("***", text)
+    return text
 
 
 class SafetyManager:
@@ -88,6 +125,7 @@ class SafetyManager:
         }
         self._untrusted_sources = set()
         self._confirm_handler = None
+        self.autopilot = False
 
         self.stop_event = threading.Event()
         self._audit_lock = threading.Lock()
@@ -142,6 +180,9 @@ class SafetyManager:
 
     def set_confirm_handler(self, handler):
         self._confirm_handler = handler
+
+    def set_autopilot(self, enabled):
+        self.autopilot = bool(enabled)
 
     def allow_session(self, name):
         name = str(name or "").strip()
@@ -254,6 +295,8 @@ class SafetyManager:
             needs_confirmation = True
         elif policy == "allow" or spec.name in self._session_allow:
             needs_confirmation = False
+        elif self.autopilot and spec.category == "code":
+            needs_confirmation = False
         elif self.autonomy == "safe":
             needs_confirmation = True
         elif self.autonomy == "balanced":
@@ -270,6 +313,7 @@ class SafetyManager:
             and spec.danger in {"confirm", "dangerous"}
             and spec.name not in self._session_allow
             and policy != "allow"
+            and not (self.autopilot and spec.category == "code")
         ):
             needs_confirmation = True
             taint_reason = (
@@ -337,26 +381,7 @@ class SafetyManager:
         text = str(text or "")
         if not self.redact_secrets:
             return text
-
-        text = SECRET_KV_RE.sub(
-            lambda match: match.group(1) + match.group(2) + "***",
-            text,
-        )
-
-        for pattern in SECRET_VALUE_RES:
-            if pattern.groups:
-                text = pattern.sub(
-                    lambda match: (
-                        match.group(1) + "***"
-                        if match.lastindex
-                        else "***"
-                    ),
-                    text,
-                )
-            else:
-                text = pattern.sub("***", text)
-
-        return text
+        return redact_secrets(text)
 
     def _rotate_audit(self):
         if self.audit_max_bytes <= 0:

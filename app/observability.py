@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.paths import BASE_DIR
+from app.safety import redact_secrets
 
 _SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|"
@@ -16,10 +17,7 @@ _SECRET_RE = re.compile(
 
 
 def redact(text):
-    return _SECRET_RE.sub(
-        lambda match: match.group(1) + match.group(2) + "***",
-        str(text or ""),
-    )
+    return redact_secrets(str(text or ""))
 
 
 class Trace:

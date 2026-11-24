@@ -1,4 +1,5 @@
 import ast
+import difflib
 import fnmatch
 import json
 import os
@@ -7,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from app.safety import contains_secret
 from app.tools.common import (
     BASE_DIR,
     human_size,
@@ -58,6 +60,224 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+
+
+DANGEROUS_COMMAND_RE = re.compile(
+    r"(?i)(?:"
+    r"\bformat\s+[a-z]:|"
+    r"\b(?:rd|rmdir)\s+/s\b|"
+    r"\bdel\s+/[fsq]\b|"
+    r"\brm\s+-[a-z]*r[a-z]*f\b|"
+    r"\bgit\s+reset\s+--hard\b|"
+    r"\bgit\s+clean\s+-[a-z]*f|"
+    r"\bgit\s+push\s+.*--force\b|"
+    r"\bgit\s+push\s+-f\b|"
+    r"\bshutdown\s+/s\b|"
+    r"\bRemove-Item\b.*-Recurse\b"
+    r")"
+)
+
+
+def _code_state(registry):
+    return getattr(registry.context, "code_state", None)
+
+
+def _is_active(state):
+    return bool(state is not None and getattr(state, "active", False))
+
+
+def _inside(root, target):
+    try:
+        Path(target).resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _guard_path(registry, root, target):
+    config = getattr(registry.context, "config", {}) or {}
+    code = config.get("code", {}) if isinstance(config, dict) else {}
+    if not isinstance(code, dict):
+        code = {}
+    if code.get("allow_outside_project", False):
+        return None
+    if _inside(root, target):
+        return None
+    return (
+        f"Ошибка: путь вне проекта запрещён: {target}. "
+        f"Корень проекта: {root}. "
+        "Смените code.project или включите code.allow_outside_project."
+    )
+
+
+def _require_plan(registry, state):
+    if not _is_active(state):
+        return None
+    if not getattr(state, "plan", None):
+        return (
+            "Ошибка: сначала вызови code_plan со списком шагов, "
+            "затем продолжай правки."
+        )
+    return None
+
+
+def _require_read(registry, state, target):
+    if not _is_active(state):
+        return None
+    if not Path(target).exists():
+        return None
+    if state.has_read(target):
+        return None
+    return (
+        f"Ошибка: сначала прочитай файл через code_read: "
+        f"{target}. Слепые правки запрещены."
+    )
+
+
+def _newline_for(text):
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _write_text(path, text, encoding="utf-8"):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.jarvis-tmp")
+    with temp.open(
+        "w",
+        encoding=encoding or "utf-8",
+        errors="replace",
+        newline="",
+    ) as file:
+        file.write(text)
+    os.replace(temp, path)
+
+
+def _apply_edit(text, old, new, replace_all=False):
+    if old in text:
+        count = text.count(old)
+        if count > 1 and not replace_all:
+            return None, count, False
+        return (
+            text.replace(old, new)
+            if replace_all
+            else text.replace(old, new, 1),
+            count,
+            False,
+        )
+
+    newline = _newline_for(text)
+    normalized = text.replace("\r\n", "\n")
+    old_normalized = old.replace("\r\n", "\n")
+    if old_normalized not in normalized:
+        return None, 0, False
+    count = normalized.count(old_normalized)
+    if count > 1 and not replace_all:
+        return None, count, False
+    updated = (
+        normalized.replace(old_normalized, new.replace("\r\n", "\n"))
+        if replace_all
+        else normalized.replace(
+            old_normalized,
+            new.replace("\r\n", "\n"),
+            1,
+        )
+    )
+    if newline == "\r\n":
+        updated = updated.replace("\n", "\r\n")
+    return updated, count, True
+
+
+def _diff_text(path, old, new, limit=6000):
+    diff = "\n".join(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=str(path),
+            tofile=str(path),
+            lineterm="",
+            n=3,
+        )
+    )
+    return truncate(diff, limit=limit) if diff else ""
+
+
+def _candidate_lines(text, old):
+    needle = old.strip().splitlines()
+    if not needle:
+        return ""
+    first = needle[0].strip()
+    hits = [
+        index + 1
+        for index, line in enumerate(text.splitlines())
+        if first and first in line.strip()
+    ]
+    return ", ".join(str(item) for item in hits[:12])
+
+
+def _read_project_rules(root):
+    chunks = []
+    for name in (
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".jarvis/instructions.md",
+        ".cursorrules",
+    ):
+        path = root / name
+        if not path.is_file():
+            continue
+        text, _ = _read_text(path, max_chars=2500)
+        if text:
+            chunks.append(f"[{name}]\n{text.strip()}")
+    return "\n\n".join(chunks)
+
+
+def _detected_commands(root):
+    commands = []
+    pyproject = root / "pyproject.toml"
+    if pyproject.exists():
+        text, _ = _read_text(pyproject, max_chars=6000)
+        if "pytest" in text:
+            commands.append("pytest")
+        if "ruff" in text:
+            commands.append("ruff")
+    package = root / "package.json"
+    if package.exists():
+        try:
+            data = json.loads(
+                package.read_text(encoding="utf-8", errors="replace")
+            )
+            scripts = data.get("scripts", {})
+            if isinstance(scripts, dict):
+                commands.extend(f"npm run {name}" for name in scripts)
+        except (OSError, ValueError):
+            pass
+    for marker, command in (
+        ("Cargo.toml", "cargo test"),
+        ("go.mod", "go test ./..."),
+        ("pom.xml", "mvn test"),
+        ("build.gradle", "gradlew test"),
+    ):
+        if (root / marker).exists():
+            commands.append(command)
+    return ", ".join(dict.fromkeys(commands)) or "не определены"
+
+
+def _changed_from_git(root):
+    result = run_command(
+        ["git", "status", "--porcelain"],
+        timeout=30,
+        cwd=root,
+    )
+    if not result.get("ok"):
+        return []
+    files = []
+    for line in (result.get("stdout") or "").splitlines():
+        text = line[3:].strip()
+        if " -> " in text:
+            text = text.split(" -> ", 1)[1]
+        if text:
+            files.append(text)
+    return files
 
 
 def _relative(path, root):
@@ -151,6 +371,122 @@ def register(registry):
         raise FileNotFoundError(
             f"Папка проекта не найдена: {text}"
         )
+
+    state = _code_state(registry)
+
+    def _publish_state():
+        if state is None:
+            return
+        publish = getattr(registry.context, "publish", None)
+        if publish is not None:
+            try:
+                publish("code_state", state.snapshot())
+            except Exception:
+                pass
+
+    @registry.tool(
+        "code_plan",
+        "Составить план кодовой задачи. Вызывай первым перед правками.",
+        {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {"type": "string"},
+                            "status": {"type": "string"},
+                            "note": {"type": "string"},
+                        },
+                    },
+                },
+                "project": {"type": "string"},
+            },
+            "required": ["steps"],
+        },
+        category="code",
+        tags=("код", "план", "plan", "todo"),
+    )
+    def code_plan(steps, project=None):
+        if state is None:
+            return "Ошибка: состояние кодовой задачи недоступно."
+        if project:
+            state.project = str(project)
+        result = state.set_plan(steps)
+        _publish_state()
+        return result
+
+    @registry.tool(
+        "code_plan_update",
+        "Обновить статус шага плана.",
+        {
+            "type": "object",
+            "properties": {
+                "step": {"type": "integer"},
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "running",
+                        "done",
+                        "failed",
+                        "blocked",
+                    ],
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["step", "status"],
+        },
+        category="code",
+        tags=("код", "план", "todo"),
+    )
+    def code_plan_update(step, status="done", note=""):
+        if state is None:
+            return "Ошибка: состояние кодовой задачи недоступно."
+        result = state.update_plan_step(step, status, note)
+        _publish_state()
+        return result
+
+    @registry.tool(
+        "code_checkpoint",
+        "Зафиксировать текущие изменения задачи для отката.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        category="code",
+        tags=("код", "checkpoint", "откат", "rollback"),
+    )
+    def code_checkpoint():
+        if state is None:
+            return "Ошибка: состояние кодовой задачи недоступно."
+        if not state.changed_files:
+            return "Изменений пока нет."
+        return (
+            f"Checkpoint: файлов изменено {len(state.changed_files)}, "
+            f"резервных копий {len(state.backups)}."
+        )
+
+    @registry.tool(
+        "code_rollback",
+        "Откатить все изменения текущей кодовой задачи.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        category="code",
+        danger="dangerous",
+        tags=("код", "rollback", "откат", "undo"),
+    )
+    def code_rollback():
+        if state is None:
+            return "Ошибка: состояние кодовой задачи недоступно."
+        result = state.rollback()
+        _publish_state()
+        return result
 
     @registry.tool(
         "code_tree",
@@ -364,6 +700,8 @@ def register(registry):
         )
         if text is None:
             return error
+        if state is not None:
+            state.mark_read(target)
         total_lines = len(text.splitlines())
         if total_lines == 0:
             return f"Файл: {_relative(target, root)}\n(файл пуст)"
@@ -426,6 +764,8 @@ def register(registry):
             if text is None:
                 parts.append(f"=== {_relative(target, root)} ===\n{error}")
                 continue
+            if state is not None:
+                state.mark_read(target)
             block = f"=== {_relative(target, root)} ===\n{text}"
             if used + len(block) > total_limit:
                 remaining = max(0, total_limit - used)
@@ -476,9 +816,15 @@ def register(registry):
             if tests
             else "Тестовые файлы test_*.py не найдены."
         )
+        rules = _read_project_rules(root)
+        commands = _detected_commands(root)
+        context = ""
+        if rules:
+            context = f"\n\nПравила проекта:\n{rules}"
         return (
-            f"{info}\n\n{test_line}\n\n"
-            f"Дерево:\n{tree}{readme}"
+            f"{info}\n\n{test_line}\n"
+            f"Команды: {commands}\n\n"
+            f"Дерево:\n{tree}{context}{readme}"
         )
 
     @registry.tool(
@@ -501,16 +847,44 @@ def register(registry):
     def code_write(path, content, project=None, encoding="utf-8"):
         root = project_path(project)
         target = resolve_path(path, base=root)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        blocked = _guard_path(registry, root, target)
+        if blocked:
+            return blocked
+        blocked = _require_plan(registry, state)
+        if blocked:
+            return blocked
+        if contains_secret(content):
+            return (
+                "Ошибка: в содержимом найден секрет/токен. "
+                "Используйте os.getenv(...) или переменную окружения."
+            )
+        existed = target.exists()
+        old_text = ""
+        if existed:
+            blocked = _require_read(registry, state, target)
+            if blocked:
+                return blocked
+            old_text = target.read_text(
+                encoding=encoding or "utf-8",
+                errors="replace",
+            )
+        backup = state.backup_file(target) if state is not None else None
         journal().record_write(target)
-        target.write_text(
-            str(content),
-            encoding=encoding or "utf-8",
-        )
-        return (
+        _write_text(target, str(content), encoding=encoding or "utf-8")
+        if state is not None:
+            state.mark_changed(
+                target,
+                backup=backup.get("backup") if backup else None,
+                existed=existed,
+            )
+            state.mark_read(target)
+            _publish_state()
+        diff = _diff_text(target, old_text, str(content)) if existed else ""
+        result = (
             f"Записано: {_relative(target, root)} "
             f"({human_size(target.stat().st_size)})"
         )
+        return result + (f"\n{diff}" if diff else "")
 
     @registry.tool(
         "code_edit",
@@ -541,36 +915,69 @@ def register(registry):
     ):
         root = project_path(project)
         target = resolve_path(path, base=root, must_exist=True)
+        blocked = _guard_path(registry, root, target)
+        if blocked:
+            return blocked
+        blocked = _require_plan(registry, state)
+        if blocked:
+            return blocked
+        blocked = _require_read(registry, state, target)
+        if blocked:
+            return blocked
         old = str(old_string or "")
         new = str(new_string or "")
         if not old:
             return "Ошибка: old_string пуст."
-        text = target.read_text(
-            encoding=encoding or "utf-8",
-            errors="replace",
+        if old == new:
+            return "Ошибка: new_string совпадает со старым текстом."
+        if contains_secret(new):
+            return (
+                "Ошибка: в new_string найден секрет/токен. "
+                "Используйте os.getenv(...) или переменную окружения."
+            )
+        try:
+            raw = target.read_bytes()
+        except OSError as error:
+            return f"Ошибка чтения {target}: {error}"
+        if b"\x00" in raw[:4096]:
+            return f"Ошибка: файл похож на бинарный: {target}"
+        text = raw.decode(encoding or "utf-8", errors="replace")
+        updated, count, normalized = _apply_edit(
+            text,
+            old,
+            new,
+            replace_all=bool(replace_all),
         )
-        count = text.count(old)
-        if count == 0:
-            return "Ошибка: old_string не найден в файле."
-        if count > 1 and not replace_all:
+        if updated is None and count == 0:
+            candidates = _candidate_lines(text, old)
+            hint = f" Похожие строки: {candidates}." if candidates else ""
+            return (
+                "Ошибка: old_string не найден в файле. "
+                "Прочитай актуальный фрагмент через code_read и повтори."
+                + hint
+            )
+        if updated is None:
             return (
                 f"Ошибка: old_string встречается {count} раз. "
                 "Уточните фрагмент или включите replace_all."
             )
-        updated = (
-            text.replace(old, new)
-            if replace_all
-            else text.replace(old, new, 1)
-        )
+        backup = state.backup_file(target) if state is not None else None
         journal().record_write(target)
-        target.write_text(
-            updated,
-            encoding=encoding or "utf-8",
-        )
-        line = updated[: updated.find(new)].count("\n") + 1 if new else 1
+        _write_text(target, updated, encoding=encoding or "utf-8")
+        if state is not None:
+            state.mark_changed(
+                target,
+                backup=backup.get("backup") if backup else None,
+                existed=True,
+            )
+            state.mark_read(target)
+            _publish_state()
+        diff = _diff_text(target, text, updated)
+        note = " (нормализованы переносы строк)" if normalized else ""
         return (
             f"Изменено: {_relative(target, root)} "
-            f"(вхождений: {count if replace_all else 1}, строка ~{line})"
+            f"(вхождений: {count if replace_all else 1}){note}"
+            + (f"\n{diff}" if diff else "")
         )
 
     @registry.tool(
@@ -603,21 +1010,85 @@ def register(registry):
         root = project_path(project)
         if not isinstance(edits, list) or not edits:
             return "Ошибка: edits должен быть непустым списком."
-        results = []
-        for item in edits:
+        blocked = _require_plan(registry, state)
+        if blocked:
+            return blocked
+        originals = {}
+        current = {}
+        order = []
+        for index, item in enumerate(edits, start=1):
             if not isinstance(item, dict):
-                results.append("Пропуск: некорректный edit.")
-                continue
-            result = code_edit(
-                item.get("path", ""),
-                item.get("old_string", ""),
-                item.get("new_string", ""),
-                project=str(root),
+                return f"Ошибка: правка {index} должна быть объектом."
+            try:
+                target = resolve_path(
+                    item.get("path", ""),
+                    base=root,
+                    must_exist=True,
+                )
+            except Exception as error:
+                return f"Ошибка правки {index}: {error}"
+            blocked = _guard_path(registry, root, target)
+            if blocked:
+                return blocked
+            blocked = _require_read(registry, state, target)
+            if blocked:
+                return blocked
+            key = str(target)
+            if key not in current:
+                originals[key] = target.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                current[key] = originals[key]
+                order.append(target)
+            old = str(item.get("old_string") or "")
+            new = str(item.get("new_string") or "")
+            if not old:
+                return f"Ошибка правки {index}: old_string пуст."
+            if contains_secret(new):
+                return (
+                    f"Ошибка правки {index}: найден секрет/токен. "
+                    "Используйте os.getenv(...)."
+                )
+            updated, count, _ = _apply_edit(
+                current[key],
+                old,
+                new,
                 replace_all=bool(item.get("replace_all", False)),
             )
-            results.append(str(result))
-            if str(result).startswith("Ошибка"):
-                break
+            if updated is None:
+                if count == 0:
+                    return (
+                        f"Ошибка правки {index}: old_string не найден в "
+                        f"{_relative(target, root)}. Ничего не изменено."
+                    )
+                return (
+                    f"Ошибка правки {index}: old_string встречается "
+                    f"{count} раз. Ничего не изменено."
+                )
+            current[key] = updated
+        for target in order:
+            key = str(target)
+            backup = state.backup_file(target) if state is not None else None
+            journal().record_write(target)
+            _write_text(target, current[key], encoding="utf-8")
+            if state is not None:
+                state.mark_changed(
+                    target,
+                    backup=backup.get("backup") if backup else None,
+                    existed=True,
+                )
+                state.mark_read(target)
+        if state is not None:
+            _publish_state()
+        results = []
+        for target in order:
+            key = str(target)
+            diff = _diff_text(target, originals[key], current[key])
+            results.append(
+                f"Изменено: {_relative(target, root)}"
+                + (f"\n{diff}" if diff else "")
+            )
         return "\n".join(results)
 
     @registry.tool(
@@ -642,6 +1113,34 @@ def register(registry):
         text = str(patch or "").strip()
         if not text:
             return "Ошибка: патч пуст."
+        blocked = _require_plan(registry, state)
+        if blocked:
+            return blocked
+        if not check_only and re.search(
+            r"(?m)^(?:---|\+\+\+)\s+(?:[A-Za-z]:|[ab]/\.\.)",
+            text,
+        ):
+            return "Ошибка: патч затрагивает путь вне проекта."
+        targets = []
+        for match in re.finditer(r"(?m)^\+\+\+\s+b/(.+)$", text):
+            name = match.group(1).strip()
+            if name and name != "/dev/null":
+                try:
+                    targets.append(resolve_path(name, base=root))
+                except Exception:
+                    pass
+        if not check_only:
+            for target in targets:
+                blocked = _guard_path(registry, root, target)
+                if blocked:
+                    return blocked
+                if target.exists():
+                    blocked = _require_read(registry, state, target)
+                    if blocked:
+                        return blocked
+                    if state is not None:
+                        state.backup_file(target)
+                    journal().record_write(target)
         handle = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".patch",
@@ -662,6 +1161,10 @@ def register(registry):
             except OSError:
                 pass
         if result.get("ok"):
+            if not check_only and state is not None:
+                for target in targets:
+                    state.mark_changed(target)
+                _publish_state()
             return "Патч применён." if not check_only else "Патч корректен."
         detail = (result.get("stderr") or result.get("stdout") or "").strip()
         return f"Ошибка git apply:\n{detail[:4000]}"
@@ -747,8 +1250,28 @@ def register(registry):
     )
     def code_run(command, project=None, timeout=300):
         root = project_path(project)
+        text = str(command or "").strip()
+        if not text:
+            return "Ошибка: команда пуста."
+        if DANGEROUS_COMMAND_RE.search(text):
+            return (
+                "Ошибка: команда заблокирована как разрушительная. "
+                "Используйте безопасный аналог."
+            )
+        config = getattr(registry.context, "config", {}) or {}
+        code = config.get("code", {}) if isinstance(config, dict) else {}
+        if not isinstance(code, dict):
+            code = {}
+        if not code.get("allow_git_write", False) and re.search(
+            r"(?i)\bgit\s+(?:commit|push|tag)\b",
+            text,
+        ):
+            return (
+                "Ошибка: git commit/push/tag запрещены настройкой "
+                "code.allow_git_write."
+            )
         result = run_command(
-            str(command or ""),
+            text,
             timeout=max(10, min(int(timeout or 300), 1800)),
             cwd=root,
             shell=True,
@@ -786,7 +1309,7 @@ def register(registry):
         target = str(path or "").strip()
         if target:
             target_path = resolve_path(target, base=root, must_exist=True)
-            if (root / "tests").is_dir() and _module_available("pytest"):
+            if target_path.suffix == ".py" and _module_available("pytest"):
                 command = [
                     sys.executable, "-m", "pytest", "-q",
                     str(target_path),
@@ -796,7 +1319,22 @@ def register(registry):
                     sys.executable, "-m", "compileall", "-q",
                     str(target_path),
                 ]
-        elif (root / "tests").is_dir() and _module_available("pytest"):
+        elif (root / "package.json").exists():
+            command = ["npm", "test"]
+        elif (root / "Cargo.toml").exists():
+            command = ["cargo", "test"]
+        elif (root / "go.mod").exists():
+            command = ["go", "test", "./..."]
+        elif (root / "pom.xml").exists():
+            command = ["mvn", "test", "-q"]
+        elif (root / "build.gradle").exists() or (
+            root / "build.gradle.kts"
+        ).exists():
+            command = ["gradlew", "test"]
+        elif _module_available("pytest") and (
+            (root / "tests").is_dir()
+            or any(_iter_files(root, "test_*.py", limit=1))
+        ):
             command = [sys.executable, "-m", "pytest", "-q"]
         elif (root / "tests").is_dir():
             command = [
@@ -820,8 +1358,9 @@ def register(registry):
         text = "\n".join(
             part for part in (output, error) if part
         ) or f"Код завершения: {result.get('returncode')}"
+        status = "OK" if result.get("ok") else "FAIL"
         return truncate(
-            f"Команда: {' '.join(command)}\n{text}",
+            f"[{status}] Команда: {' '.join(command)}\n{text}",
             limit=12000,
         )
 
@@ -846,7 +1385,14 @@ def register(registry):
         root = project_path(project)
         target = str(path or ".").strip() or "."
         if _module_available("ruff"):
-            command = [sys.executable, "-m", "ruff", "check", target]
+            command = [
+                sys.executable,
+                "-m",
+                "ruff",
+                "check",
+                "--no-cache",
+                target,
+            ]
         else:
             command = [
                 sys.executable, "-m", "compileall", "-q", target,
@@ -869,6 +1415,133 @@ def register(registry):
             f"[{status}] {' '.join(command)}\n{output}",
             limit=12000,
         )
+
+    @registry.tool(
+        "code_verify",
+        "Проверить изменённые файлы: синтаксис, lint, diff и тесты.",
+        {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "timeout": {"type": "integer"},
+            },
+            "required": [],
+        },
+        category="code",
+        tags=("код", "verify", "тесты", "проверка"),
+    )
+    def code_verify(project=None, timeout=900):
+        root = project_path(project)
+        raw_files = list(getattr(state, "changed_files", []) or [])
+        if not raw_files:
+            raw_files = _changed_from_git(root)
+        files = []
+        for item in raw_files:
+            target = Path(item)
+            if not target.is_absolute():
+                target = (root / target).resolve()
+            if target.exists() and target.is_file() and _inside(root, target):
+                files.append(target)
+        if not files:
+            message = "Изменений нет — проверять нечего."
+            if state is not None:
+                state.record_check(
+                    "code_verify",
+                    True,
+                    message,
+                    mark_verified=True,
+                )
+                _publish_state()
+            return message
+
+        checks = []
+        py_files = [item for item in files if item.suffix == ".py"]
+        if py_files:
+            result = run_command(
+                [sys.executable, "-m", "compileall", "-q", *map(str, py_files)],
+                timeout=300,
+                cwd=root,
+            )
+            checks.append(
+                (
+                    "compileall",
+                    bool(result.get("ok")),
+                    (result.get("stdout") or "")
+                    + (result.get("stderr") or ""),
+                )
+            )
+        if py_files and _module_available("ruff"):
+            result = run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "ruff",
+                    "check",
+                    "--no-cache",
+                    *map(str, py_files),
+                ],
+                timeout=300,
+                cwd=root,
+            )
+            checks.append(
+                (
+                    "ruff",
+                    bool(result.get("ok")),
+                    (result.get("stdout") or "")
+                    + (result.get("stderr") or ""),
+                )
+            )
+        git_check = run_command(
+            ["git", "diff", "--check"],
+            timeout=60,
+            cwd=root,
+        )
+        if git_check.get("ok") or "not a git repository" not in (
+            git_check.get("stderr") or ""
+        ).lower():
+            checks.append(
+                (
+                    "git diff --check",
+                    bool(git_check.get("ok")),
+                    (git_check.get("stderr") or "")
+                    + (git_check.get("stdout") or ""),
+                )
+            )
+
+        config = getattr(registry.context, "config", {}) or {}
+        code = config.get("code", {}) if isinstance(config, dict) else {}
+        if not isinstance(code, dict):
+            code = {}
+        if code.get("verify_tests", True):
+            test_result = code_test(
+                project=str(root),
+                timeout=timeout,
+            )
+            lowered = test_result.lower()
+            tests_ok = (
+                "[ok]" in lowered
+                and "failed" not in lowered
+                and "error" not in lowered
+            )
+            checks.append(("tests", tests_ok, test_result))
+
+        ok = all(item[1] for item in checks)
+        lines = [f"[{'OK' if ok else 'ЕСТЬ ОШИБКИ'}] Проверка изменений"]
+        for name, passed, detail in checks:
+            text = re.sub(r"\s+", " ", str(detail or "")).strip()
+            lines.append(
+                f"- {'OK' if passed else 'FAIL'} {name}: {text[:500]}"
+            )
+        summary = "\n".join(lines)
+        if state is not None:
+            state.record_check(
+                "code_verify",
+                ok,
+                summary,
+                mark_verified=ok,
+            )
+            _publish_state()
+        return truncate(summary, limit=12000)
 
     @registry.tool(
         "code_format",

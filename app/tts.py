@@ -16,17 +16,48 @@ log = get_logger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
-# Голоса Edge TTS на случай, если заданный в конфиге недоступен (403).
-# en-US-GuyNeural больше не используется: сервис отдаёт для него
-# NoAudioReceived, из-за чего озвучка молча падала в офлайн-режим.
+# JARVIS должен оставаться мужским. Женские и заведомо мёртвые
+# голоса не попадают в цепочку даже как fallback.
+# ru-RU-DmitryNeural стабильно отдаёт NoAudioReceived, поэтому
+# базовые голоса — мужские мультиязычные Edge-голоса.
 FALLBACK_VOICES = (
-    "ru-RU-DmitryNeural",
-    "ru-RU-SvetlanaNeural",
+    "en-US-BrianMultilingualNeural",
     "en-US-AndrewMultilingualNeural",
 )
 
-VOICE_ATTEMPTS = 2
-VOICE_RETRY_DELAY = 0.8
+BLOCKED_VOICES = {
+    "ru-RU-DmitryNeural",       # NoAudioReceived
+    "ru-RU-SvetlanaNeural",     # женский
+    "ru-RU-IrinaNeural",        # женский
+    "en-US-AriaNeural",         # женский
+    "en-US-JennyNeural",        # женский
+    "en-GB-SoniaNeural",        # женский
+}
+
+VOICE_FAILURE_TTL = 600
+
+OFFLINE_MALE_MARKERS = (
+    "male",
+    "pavel",
+    "dmitry",
+    "dmitri",
+    "ruslan",
+    "yuri",
+    "yuriy",
+    "maxim",
+    "artem",
+    "aidar",
+)
+
+OFFLINE_FEMALE_MARKERS = (
+    "female",
+    "irina",
+    "svetlana",
+    "zira",
+    "aria",
+    "jenny",
+    "sonia",
+)
 
 
 def _hidden_window_kwargs():
@@ -63,12 +94,45 @@ def split_sentences(text: str, max_chars: int = 400):
     return parts or [text]
 
 
+def _voice_text(voice) -> str:
+    return (
+        f"{getattr(voice, 'id', '')} "
+        f"{getattr(voice, 'name', '')} "
+        f"{getattr(voice, 'gender', '')}"
+    ).lower()
+
+
+def _is_male_offline_voice(voice) -> bool:
+    text = _voice_text(voice)
+    if any(marker in text for marker in OFFLINE_FEMALE_MARKERS):
+        return False
+    if str(getattr(voice, "gender", "") or "").strip().lower() == "male":
+        return True
+    return any(marker in text for marker in OFFLINE_MALE_MARKERS)
+
+
+def _is_russian_voice(voice) -> bool:
+    text = _voice_text(voice)
+    languages = " ".join(
+        str(item)
+        for item in (getattr(voice, "languages", []) or [])
+    ).lower()
+    return (
+        "russian" in text
+        or "ru-ru" in text
+        or "ru_ru" in text
+        or languages.startswith("ru")
+        or "ru_" in languages
+        or "ru-ru" in languages
+    )
+
+
 class TTS:
     def __init__(
         self,
         rate: int = 175,
-        voice: str = "en-US-AndrewMultilingualNeural",
-        pitch: str = "-8Hz",
+        voice: str = "en-US-BrianMultilingualNeural",
+        pitch: str = "-12Hz",
         voices=None,
         offline_fallback: bool = True,
         output_device=None,
@@ -85,11 +149,18 @@ class TTS:
         self.sample_rate = 24000
         self.channels = 1
 
-        ordered = [voice]
-        for item in voices or []:
+        ordered = []
+        for item in [voice, *(voices or [])]:
             item = str(item).strip()
-            if item and item not in ordered:
-                ordered.append(item)
+            if not item or item in ordered:
+                continue
+            if item in BLOCKED_VOICES:
+                log.info(
+                    f"[TTS] Голос {item} отключён: "
+                    "женский или недоступный."
+                )
+                continue
+            ordered.append(item)
         for item in FALLBACK_VOICES:
             if item not in ordered:
                 ordered.append(item)
@@ -100,6 +171,7 @@ class TTS:
         self._process = None
         self._process_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._voice_failures = {}
 
         device_info = (
             f", устройство: {output_device}" if output_device else ""
@@ -136,6 +208,26 @@ class TTS:
             log.info(f"[TTS] Не удалось выбрать устройство: {error}")
         return None
 
+    def _voices_to_try(self):
+        now = time.monotonic()
+        usable = [
+            voice
+            for voice in self.voices
+            if self._voice_failures.get(voice, 0) <= now
+        ]
+        if usable:
+            return usable
+        log.info(
+            "[TTS] Все голоса недавно падали; "
+            "пропускаю Edge до истечения паузы."
+        )
+        return []
+
+    def _mark_voice_failed(self, voice):
+        self._voice_failures[voice] = (
+            time.monotonic() + VOICE_FAILURE_TTL
+        )
+
     def _play_pcm(self, process, result):
         try:
             with sd.RawOutputStream(
@@ -168,6 +260,8 @@ class TTS:
             [
                 self.ffmpeg,
                 "-loglevel", "error",
+                "-probesize", "32k",
+                "-analyzeduration", "0",
                 "-i", "pipe:0",
                 "-f", "s16le",
                 "-ar", str(self.sample_rate),
@@ -208,8 +302,14 @@ class TTS:
                 self._process = None
 
     async def _stream_sentence(self, sentence: str, voice: str):
-        """Озвучивает одно предложение: edge-tts -> ffmpeg -> PCM."""
+        """Озвучивает весь текст: edge-tts -> ffmpeg -> PCM.
 
+        Один WebSocket и один ffmpeg на фразу дают непрерывную
+        речь без пауз между предложениями.
+        """
+
+        started = time.monotonic()
+        first_audio_at = None
         process = self._spawn_ffmpeg()
         played = {"bytes": 0, "error": None}
 
@@ -227,6 +327,8 @@ class TTS:
                 rate=self.rate,
                 volume="+0%",
                 pitch=self.pitch,
+                connect_timeout=6,
+                receive_timeout=20,
             )
 
             async for chunk in communicate.stream():
@@ -238,6 +340,13 @@ class TTS:
                 audio_data = chunk["data"]
                 if not audio_data:
                     continue
+
+                if first_audio_at is None:
+                    first_audio_at = time.monotonic() - started
+                    log.info(
+                        f"[TTS] Первое аудио через "
+                        f"{first_audio_at:.2f} с (голос {voice})."
+                    )
 
                 try:
                     process.stdin.write(audio_data)
@@ -262,18 +371,9 @@ class TTS:
             raise RuntimeError(f"аудиовыход: {played['error']}")
 
     async def _speak_async(self, text: str, voice: str, progress=None):
-        sentences = (
-            split_sentences(text) if self.stream_sentences else [text]
-        )
-        start = int((progress or {}).get("done", 0))
-        for index, sentence in enumerate(sentences):
-            if index < start:
-                continue
-            if self._stop_event.is_set():
-                break
-            await self._stream_sentence(sentence, voice)
-            if progress is not None:
-                progress["done"] = index + 1
+        await self._stream_sentence(text, voice)
+        if progress is not None:
+            progress["done"] = 1
 
     def stop(self):
         """Прерывает текущее воспроизведение (barge-in)."""
@@ -298,30 +398,23 @@ class TTS:
             engine.setProperty("rate", int(self.rate_value or 175))
             chosen = None
             for voice in engine.getProperty("voices") or []:
-                identifier = str(getattr(voice, "id", "")).lower()
-                name = str(getattr(voice, "name", "")).lower()
-                languages = " ".join(
-                    str(item)
-                    for item in (getattr(voice, "languages", []) or [])
-                ).lower()
-                if (
-                    "russian" in identifier
-                    or "russian" in name
-                    or languages.startswith("ru")
-                    or "ru_" in languages
-                    or "ru-ru" in languages
-                ):
-                    chosen = voice
-                    break
-            if chosen is not None:
-                engine.setProperty("voice", chosen.id)
+                if not _is_male_offline_voice(voice):
+                    continue
+                if not _is_russian_voice(voice):
+                    continue
+                chosen = voice
+                break
+            if chosen is None:
                 log.info(
-                    f"[TTS] Офлайн-голос: "
-                    f"{getattr(chosen, 'name', chosen.id)}"
+                    "[TTS] Мужской русский офлайн-голос не найден; "
+                    "женский fallback отключён."
                 )
-            else:
-                log.info("[TTS] Русский офлайн-голос не найден, "
-                         "используется голос по умолчанию.")
+                return False
+            engine.setProperty("voice", chosen.id)
+            log.info(
+                f"[TTS] Офлайн-голос: "
+                f"{getattr(chosen, 'name', chosen.id)}"
+            )
             engine.say(text)
             engine.runAndWait()
             log.info("[TTS] Офлайн-синтез выполнен.")
@@ -339,34 +432,35 @@ class TTS:
         self._stop_event.clear()
         log.info(f"[TTS] Говорю: {text}")
 
-        progress = {"done": 0}
-        for voice in self.voices:
-            for attempt in range(1, VOICE_ATTEMPTS + 1):
+        for voice in self._voices_to_try():
+            if self._stop_event.is_set():
+                log.info("[TTS] Воспроизведение прервано.")
+                return True
+            started = time.monotonic()
+            try:
+                asyncio.run(self._speak_async(text, voice))
                 if self._stop_event.is_set():
                     log.info("[TTS] Воспроизведение прервано.")
                     return True
-                try:
-                    self._stop_event.clear()
-                    asyncio.run(
-                        self._speak_async(text, voice, progress)
-                    )
-                    if self._stop_event.is_set():
-                        log.info("[TTS] Воспроизведение прервано.")
-                        return True
-                    log.info("[TTS] Готово.")
-                    return True
+                self._voice_failures.pop(voice, None)
+                log.info(
+                    f"[TTS] Готово за "
+                    f"{time.monotonic() - started:.1f} с "
+                    f"(голос {voice})."
+                )
+                return True
 
-                except Exception as error:
-                    if self._stop_event.is_set():
-                        log.info("[TTS] Воспроизведение прервано.")
-                        return True
-                    log.info(
-                        f"[TTS] Edge TTS недоступен для голоса "
-                        f"{voice}, попытка {attempt}/{VOICE_ATTEMPTS} "
-                        f"({type(error).__name__}: {error})."
-                    )
-                    if attempt < VOICE_ATTEMPTS:
-                        time.sleep(VOICE_RETRY_DELAY)
+            except Exception as error:
+                if self._stop_event.is_set():
+                    log.info("[TTS] Воспроизведение прервано.")
+                    return True
+                elapsed = time.monotonic() - started
+                self._mark_voice_failed(voice)
+                log.info(
+                    f"[TTS] Голос {voice} недоступен за "
+                    f"{elapsed:.1f} с "
+                    f"({type(error).__name__}: {error})."
+                )
 
         if self.offline_fallback:
             log.info("[TTS] Пробую офлайн-синтез.")

@@ -25,7 +25,7 @@ from app.llm_client import LLMClient
 from app.logging import get_logger
 from app.memory import Memory
 from app.observability import tracer
-from app.paths import ensure_runtime_dirs
+from app.paths import BASE_DIR, ensure_runtime_dirs
 from app.pc_agent import PCAgent
 from app.sessions import SessionStore
 from app.status import set_status
@@ -493,6 +493,10 @@ def initialize():
 
     global _ACTIVE_AGENT
     _ACTIVE_AGENT = pc_agent
+    pc_agent.registry.context.publish = publish_ui_event
+    pc_agent.code_state.set_publisher(
+        lambda payload: publish_ui_event("code_state", payload)
+    )
 
     # Языковая модель
     agent_config = (
@@ -687,6 +691,11 @@ def process_command(
     if not text:
         return True
 
+    code_config = get_code_config(pc_agent.config)
+    pc_agent.safety.set_autopilot(
+        mode == "code" and bool(code_config.get("autopilot", True))
+    )
+
     persona_config = persona_config or persona.normalize_config()
     address = persona_config["address"]
     trace = tracer().start(text, source=source, mode=mode)
@@ -822,6 +831,14 @@ def process_command(
                 max_iterations,
                 int(code_config.get("max_iterations", 30)),
             )
+            project = str(
+                code_config.get("project") or BASE_DIR
+            ).strip()
+            pc_agent.code_state.begin_task(
+                text,
+                project,
+                session_id=str(getattr(llm, "session_id", "") or ""),
+            )
 
         copilot_answer = None
         if mode == "code" and code_backend_uses_copilot(
@@ -919,6 +936,9 @@ def process_command(
                 task_id=task_id,
                 trace=trace,
                 parallel_safe=pc_agent.is_tool_parallel_safe,
+                code_state=(
+                    pc_agent.code_state if mode == "code" else None
+                ),
                 **tool_kwargs,
             )
 
@@ -963,6 +983,10 @@ def process_command(
                 pc_agent.tasks.complete(task_id, answer)
             else:
                 pc_agent.tasks.fail(task_id, "Ошибка обработки запроса")
+        if mode == "code":
+            pc_agent.code_state.finish(
+                "done" if status == "ok" and answer else "failed"
+            )
         trace.finish(answer, status=status)
 
     return True

@@ -145,8 +145,10 @@ class CodeToolsetTests(unittest.TestCase):
         self.assertIn("code_edit", names)
         self.assertIn("code_multi_edit", names)
         self.assertIn("code_test", names)
-        self.assertIn("run_powershell", names)
+        self.assertIn("code_verify", names)
+        self.assertIn("code_plan", names)
         self.assertIn("run_capability", names)
+        self.assertNotIn("run_python", names)
 
     def test_visual_query_adds_gui_tools(self):
         agent = PCAgent()

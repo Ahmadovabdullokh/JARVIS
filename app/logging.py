@@ -28,6 +28,26 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)(authorization:\s*bearer\s+)\S+"), r"\1***"),
     (re.compile(r"(?i)(jarvis_token=)[^;\s\"']+"), r"\1***"),
     (re.compile(r"\b(?:sk|gsk)[-_][A-Za-z0-9_-]{16,}\b"), "***"),
+    (re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b"), "***"),
+    (
+        re.compile(
+            r"https://(?:discord|discordapp)\.com/api/webhooks/\S+",
+            re.IGNORECASE,
+        ),
+        "***",
+    ),
+    (
+        re.compile(r"https://hooks\.slack\.com/services/\S+", re.IGNORECASE),
+        "***",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----.*?"
+            r"-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        "***",
+    ),
 )
 
 

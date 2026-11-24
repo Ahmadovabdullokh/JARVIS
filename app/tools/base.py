@@ -125,6 +125,7 @@ class ToolContext:
     notifier: Any = None
     publish: Any = None
     cancel_event: Any = None
+    code_state: Any = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
