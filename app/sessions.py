@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -6,6 +7,13 @@ import uuid
 from pathlib import Path
 
 from app.paths import DATA_DIR
+
+
+def _fts_query(text):
+    """Готовит безопасный FTS5-запрос из пользовательской строки."""
+    terms = re.findall(r"[\w\-]+", str(text or "").lower())
+    quoted = [f'"{term}"' for term in terms if len(term) >= 2]
+    return " OR ".join(quoted[:24])
 
 
 class SessionStore:
@@ -23,6 +31,14 @@ class SessionStore:
             check_same_thread=False,
         )
         self._connection.row_factory = sqlite3.Row
+        # WAL + NORMAL: заметно быстрее записи при слабом диске,
+        # безопасно для однопроцессного приложения.
+        try:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError:
+            pass
+        self._fts = False
         self._init_db()
 
     def _init_db(self):
@@ -50,6 +66,64 @@ class SessionStore:
                 """
             )
             self._connection.commit()
+        self._init_fts()
+
+    def _init_fts(self):
+        """Полнотекстовый индекс FTS5 (быстрый поиск по истории).
+
+        FTS5 встроен в sqlite3 и не требует зависимостей/памяти.
+        Если сборка Python без FTS5 — молча остаёмся на fallback.
+        """
+
+        try:
+            self._connection.executescript(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    content,
+                    content='messages',
+                    content_rowid='id',
+                    tokenize='unicode61'
+                );
+                CREATE TRIGGER IF NOT EXISTS messages_ai
+                    AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, content)
+                    VALUES (new.id, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_ad
+                    AFTER DELETE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_au
+                    AFTER UPDATE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                    INSERT INTO messages_fts(rowid, content)
+                    VALUES (new.id, new.content);
+                END;
+                """
+            )
+            self._connection.commit()
+            self._fts = True
+        except sqlite3.DatabaseError:
+            self._fts = False
+            return
+        # Первичная индексация уже существующих сообщений.
+        try:
+            indexed = self._connection.execute(
+                "SELECT COUNT(*) FROM messages_fts"
+            ).fetchone()[0]
+            existing = self._connection.execute(
+                "SELECT COUNT(*) FROM messages"
+            ).fetchone()[0]
+            if indexed == 0 and existing > 0:
+                self._connection.execute(
+                    "INSERT INTO messages_fts(messages_fts) "
+                    "VALUES ('rebuild')"
+                )
+                self._connection.commit()
+        except sqlite3.DatabaseError:
+            self._fts = False
 
     def _now(self):
         return time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -136,10 +210,40 @@ class SessionStore:
         ]
 
     def search(self, query, limit=20):
-        query = str(query or "").strip().casefold()
+        query = str(query or "").strip()
         if not query:
             return []
         limit = max(1, int(limit or 20))
+
+        if self._fts:
+            fts_query = _fts_query(query)
+            if fts_query:
+                try:
+                    with self._lock:
+                        rows = self._connection.execute(
+                            "SELECT m.session_id, m.role, m.content, "
+                            "m.created, bm25(messages_fts) AS rank "
+                            "FROM messages_fts "
+                            "JOIN messages m ON m.id = messages_fts.rowid "
+                            "WHERE messages_fts MATCH ? "
+                            "ORDER BY rank LIMIT ?",
+                            (fts_query, limit),
+                        ).fetchall()
+                    if rows:
+                        return [
+                            {
+                                "session_id": row["session_id"],
+                                "role": row["role"],
+                                "content": row["content"],
+                                "created": row["created"],
+                            }
+                            for row in rows
+                        ]
+                except sqlite3.DatabaseError:
+                    pass
+
+        # Fallback: подстрочный поиск по последним сообщениям.
+        needle = query.casefold()
         with self._lock:
             rows = self._connection.execute(
                 "SELECT session_id, role, content, created FROM messages "
@@ -148,7 +252,7 @@ class SessionStore:
         matches = [
             dict(row)
             for row in rows
-            if query in str(row["content"]).casefold()
+            if needle in str(row["content"]).casefold()
         ]
         return matches[:limit]
 

@@ -13,10 +13,13 @@
 редиректит на чистый ``/``.
 """
 
+import ipaddress
 import json
 import mimetypes
 import os
 import secrets
+import shutil
+import subprocess
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -24,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from app import config as config_module
+from app.camera_service import get_camera_service, load_camera_settings
 from app.logging import get_logger
 from app.paths import DATA_DIR, resource_path
 from app.status import get_status
@@ -32,7 +36,14 @@ log = get_logger(__name__)
 
 CHAT_MIRROR_FILE = DATA_DIR / "remote_chat.log"
 STATUS_FILE = DATA_DIR / "remote_status.json"
-MIRROR_EVENT_TYPES = {"user", "assistant", "system", "error"}
+MIRROR_EVENT_TYPES = {
+    "user",
+    "assistant",
+    "system",
+    "error",
+    "gesture",
+    "gesture_profile",
+}
 
 
 def _mirror_to_pc(kind, text):
@@ -57,6 +68,7 @@ DEFAULT_PORT = 8765
 UI_DIR = resource_path("ui")
 MAX_BODY = 1024 * 1024
 MAX_AUDIO_BODY = 15 * 1024 * 1024
+MAX_FRAME_BODY = 2 * 1024 * 1024
 
 # Методы RPC, безопасные для read-only клиента (без send_message и т.п.).
 READ_ONLY_METHODS = {
@@ -67,7 +79,62 @@ READ_ONLY_METHODS = {
     "get_catalog",
     "get_journal",
     "get_audit",
+    "get_camera",
+    "get_camera_stream_url",
+    "camera_look",
 }
+
+# Методы, недоступные по сети ни при какой политике: они возвращают
+# секреты (токен в ссылке-приглашении) или управляют файлами на ПК.
+LOCAL_ONLY_METHODS = {
+    "get_pairing",
+    "save_settings",
+    "open_path",
+    "reload_plugins",
+}
+
+# Автопереключение камеры на телефон: не чаще одного раза в N секунд,
+# чтобы поток кадров не перезапускал захват на каждый 409/503.
+PHONE_SWITCH_MIN_INTERVAL = 3.0
+_phone_switch_lock = threading.Lock()
+_phone_switch_last = 0.0
+
+
+def _phone_auto_switch_enabled():
+    try:
+        return bool(
+            load_camera_settings().get("phone_auto_switch", True)
+        )
+    except Exception:
+        return True
+
+
+def _switch_to_phone(bridge, mirror=None):
+    """Переключает источник камеры ПК на телефон после первого кадра.
+
+    Возвращает True, если попытка была сделана и мост её принял.
+    """
+
+    global _phone_switch_last
+    now = time.monotonic()
+    with _phone_switch_lock:
+        if now - _phone_switch_last < PHONE_SWITCH_MIN_INTERVAL:
+            return False
+        _phone_switch_last = now
+    payload = {"enabled": True, "source": "phone"}
+    if mirror is not None:
+        payload["mirror"] = bool(mirror)
+    try:
+        bridge.handle("set_camera", payload, consumer="phone")
+    except Exception as error:
+        log.info(
+            "[REMOTE] Автопереключение камеры не удалось: %s: %s",
+            type(error).__name__,
+            error,
+        )
+        return False
+    log.info("[REMOTE] Камера ПК переключена на источник «телефон».")
+    return True
 
 LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="ru">
@@ -166,6 +233,56 @@ def _lan_ip():
             return "127.0.0.1"
     finally:
         sock.close()
+
+
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+TAILSCALE_EXE_CANDIDATES = (
+    r"C:\Program Files\Tailscale\tailscale.exe",
+    r"C:\Program Files (x86)\Tailscale\tailscale.exe",
+)
+TAILSCALE_CACHE_SECONDS = 30.0
+_tailscale_cache = {"ip": "", "until": 0.0}
+
+
+def _tailscale_ip():
+    """IPv4-адрес ПК в сети Tailscale или "" если Tailscale не подключён."""
+
+    now = time.monotonic()
+    if now < _tailscale_cache["until"]:
+        return _tailscale_cache["ip"]
+
+    executable = shutil.which("tailscale") or ""
+    if not executable:
+        for candidate in TAILSCALE_EXE_CANDIDATES:
+            if os.path.isfile(candidate):
+                executable = candidate
+                break
+
+    value = ""
+    if executable:
+        try:
+            result = subprocess.run(
+                [executable, "ip", "-4"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    text = line.strip()
+                    try:
+                        if ipaddress.ip_address(text) in TAILSCALE_NET:
+                            value = text
+                            break
+                    except ValueError:
+                        continue
+        except (OSError, subprocess.SubprocessError):
+            value = ""
+
+    _tailscale_cache["ip"] = value
+    _tailscale_cache["until"] = now + TAILSCALE_CACHE_SECONDS
+    return value
 
 
 def _client_ip(handler):
@@ -283,6 +400,9 @@ def make_handler(bridge, token, allowed_methods=None):
 
     class RemoteHandler(BaseHTTPRequestHandler):
         server_version = "JarvisRemote/1.0"
+        # HTTP/1.1 + keep-alive: телефон шлёт кадры по одному соединению.
+        protocol_version = "HTTP/1.1"
+        timeout = 60
 
         def log_message(self, fmt, *args):  # тише в консоли
             log.info("[REMOTE] " + fmt % args)
@@ -323,6 +443,7 @@ def make_handler(bridge, token, allowed_methods=None):
             self.send_response(302)
             self.send_header("Location", "/")
             self.send_header("Set-Cookie", self._cookie_header(token_value))
+            self.send_header("Content-Length", "0")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
@@ -436,6 +557,75 @@ def make_handler(bridge, token, allowed_methods=None):
                 return None
             return candidate
 
+        def _camera_authorized(self, query):
+            camera = get_camera_service()
+            stream_token = str(getattr(camera, "stream_token", "") or "")
+            for value in query.get("token") or []:
+                if stream_token and secrets.compare_digest(
+                    str(value), stream_token
+                ):
+                    return True
+                if self._token_matches(str(value)):
+                    return True
+            return self._authorized()
+
+        def _stream_camera(self):
+            camera = get_camera_service()
+            if not camera.is_running():
+                self._send_json(
+                    {"ok": False, "error": "camera is off"},
+                    503,
+                )
+                return
+            if not camera.acquire_client():
+                self._send_json(
+                    {"ok": False, "error": "too many camera clients"},
+                    503,
+                )
+                return
+            boundary = b"--jarvisframe"
+            try:
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "multipart/x-mixed-replace; boundary=jarvisframe",
+                )
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Connection", "close")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.close_connection = True
+                last_sent = None
+                while camera.is_running():
+                    jpeg = camera.latest_jpeg()
+                    if not jpeg or jpeg is last_sent:
+                        time.sleep(0.02)
+                        continue
+                    last_sent = jpeg
+                    header = (
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: "
+                        + str(len(jpeg)).encode("ascii")
+                        + b"\r\n\r\n"
+                    )
+                    self.wfile.write(boundary + b"\r\n")
+                    self.wfile.write(header)
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                    time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            except Exception as error:
+                log.info(
+                    "[CAMERA STREAM] %s: %s",
+                    type(error).__name__,
+                    error,
+                )
+            finally:
+                camera.release_client()
+
         def do_GET(self):
             parsed = urlparse(self.path)
             path = parsed.path
@@ -453,6 +643,12 @@ def make_handler(bridge, token, allowed_methods=None):
                 )
                 return
             query = parse_qs(parsed.query)
+            if path == "/camera.mjpg":
+                if not self._camera_authorized(query):
+                    self._reject()
+                    return
+                self._stream_camera()
+                return
             if "token" in query and path in {"/", "/index.html"}:
                 self._login_via_query(query)
                 return
@@ -541,6 +737,50 @@ def make_handler(bridge, token, allowed_methods=None):
             if not self._authorized():
                 self._reject()
                 return
+            if parsed.path == "/camera/frame":
+                body = self._read_body(MAX_FRAME_BODY)
+                if body is None:
+                    self._send_json({"ok": False, "error": "bad request"}, 400)
+                    return
+                query = parse_qs(parsed.query)
+                rotate = (query.get("rotate") or ["0"])[0]
+                device = self.headers.get("X-Jarvis-Device") or ""
+                mirror = None
+                mirror_value = (query.get("mirror") or [""])[0]
+                if mirror_value in {"0", "1"}:
+                    mirror = mirror_value == "1"
+                camera = get_camera_service()
+                error = camera.submit_external_jpeg(
+                    body, rotate=rotate, device=device
+                )
+                # Первый кадр с телефона сам включает источник «phone»:
+                # не нужно вручную переключать камеру в HUD.
+                if (
+                    error in {"not phone source", "camera is off"}
+                    and _phone_auto_switch_enabled()
+                    and _switch_to_phone(bridge, mirror)
+                ):
+                    error = camera.submit_external_jpeg(
+                        body, rotate=rotate, device=device
+                    )
+                if error == "bad jpeg":
+                    self._send_json({"ok": False, "error": error}, 400)
+                    return
+                if error == "not phone source":
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "error": error,
+                            "hint": "switch camera source to phone",
+                        },
+                        409,
+                    )
+                    return
+                if error:
+                    self._send_json({"ok": False, "error": error}, 503)
+                    return
+                self._send_json({"ok": True})
+                return
             if parsed.path == "/stt":
                 body = self._read_body(MAX_AUDIO_BODY)
                 if body is None:
@@ -569,6 +809,15 @@ def make_handler(bridge, token, allowed_methods=None):
                 return
 
             method = str(data.get("method", ""))
+            if method in LOCAL_ONLY_METHODS:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "method is local only",
+                    },
+                    403,
+                )
+                return
             policy = (
                 allowed_methods()
                 if callable(allowed_methods)
@@ -646,6 +895,13 @@ class RemoteServer:
             return ""
         return f"http://{_lan_ip()}:{self.port}/"
 
+    @property
+    def tailscale_url(self):
+        if self.host in {"127.0.0.1", "localhost"}:
+            return ""
+        ip = _tailscale_ip()
+        return f"http://{ip}:{self.port}/" if ip else ""
+
     def start(self):
         if self._thread is not None:
             return
@@ -659,6 +915,12 @@ class RemoteServer:
         lan = self.lan_url
         if lan:
             log.info("[REMOTE] Для телефона в той же Wi-Fi: %s", lan)
+        tailscale = self.tailscale_url
+        if tailscale:
+            log.info(
+                "[REMOTE] Для телефона в любой сети (Tailscale): %s",
+                tailscale,
+            )
 
     def stop(self):
         try:
@@ -679,6 +941,7 @@ def write_status(server):
                 {
                     "url": server.url,
                     "lan_url": server.lan_url,
+                    "tailscale_url": server.tailscale_url,
                     "updated": time.time(),
                 },
                 ensure_ascii=False,

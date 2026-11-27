@@ -73,6 +73,7 @@ class ScreenVisionTests(unittest.TestCase):
         self.assertTrue(
             {
                 "analyze_screen",
+                "look_at_camera",
                 "screen_click",
                 "screen_type",
                 "screen_press",
@@ -87,6 +88,60 @@ class ScreenVisionTests(unittest.TestCase):
                 {"question": "Что открыто?"},
             ),
         )
+
+    def test_look_at_camera_sends_frame_to_groq(self):
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "На столе ноутбук."}}]
+        }
+        frame = io.BytesIO()
+        Image.new("RGB", (64, 48), (10, 20, 30)).save(
+            frame, format="JPEG"
+        )
+        camera = Mock()
+        camera.is_running.return_value = True
+        camera.snapshot_jpeg.return_value = frame.getvalue()
+        agent = PCAgent(
+            api_key="test-key",
+            vision_model="test-vision-model",
+        )
+
+        with (
+            patch(
+                "app.camera_service.get_camera_service",
+                return_value=camera,
+            ),
+            patch(
+                "app.pc_agent.requests.post",
+                return_value=response,
+            ) as post,
+        ):
+            result = agent.look_at_camera("Что видно?")
+
+        self.assertEqual(result, "На столе ноутбук.")
+        request = post.call_args.kwargs
+        self.assertEqual(request["json"]["model"], "test-vision-model")
+
+    def test_look_at_camera_reports_disabled_camera(self):
+        camera = Mock()
+        camera.is_running.return_value = False
+        agent = PCAgent(api_key="test-key")
+
+        with patch(
+            "app.camera_service.get_camera_service",
+            return_value=camera,
+        ):
+            result = agent.look_at_camera("Что видно?")
+
+        self.assertIn("Камера выключена", result)
+
+    def test_look_at_camera_respects_config_flag(self):
+        agent = PCAgent(api_key="test-key")
+        agent.config = {"camera": {"vision_enabled": False}}
+
+        result = agent.look_at_camera("Что видно?")
+
+        self.assertIn("vision_enabled", result)
 
     def test_screen_navigation_click_does_not_prompt(self):
         agent = PCAgent()

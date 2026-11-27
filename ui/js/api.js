@@ -5,6 +5,14 @@
   let attached = false;
   let queue = Promise.resolve();
 
+  // Раньше токен хранился в localStorage; теперь вход только через
+  // HttpOnly-cookie, а URL не содержит секретов (не попадает в историю/прокси).
+  try {
+    localStorage.removeItem("jarvis_remote_token");
+  } catch (error) {
+    /* storage unavailable */
+  }
+
   function packageReady() {
     return Boolean(
       window.webview2 &&
@@ -19,27 +27,12 @@
     return /^https?:$/.test(window.location.protocol);
   }
 
-  function remoteToken() {
-    var match = /[?&]token=([^&]+)/.exec(window.location.search);
-    if (match) {
-      var value = decodeURIComponent(match[1]);
-      try {
-        localStorage.setItem("jarvis_remote_token", value);
-      } catch (error) {
-        /* storage unavailable */
-      }
-      return value;
-    }
-    try {
-      return localStorage.getItem("jarvis_remote_token") || "";
-    } catch (error) {
-      return "";
-    }
-  }
-
   function remoteRpc(id, method, payload) {
-    return fetch("/rpc?token=" + encodeURIComponent(remoteToken()), {
+    // Авторизация — HttpOnly-cookie от POST /login. Токен в URL не нужен.
+    return fetch("/rpc", {
       method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: "jarvis_request",

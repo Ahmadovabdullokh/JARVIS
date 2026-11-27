@@ -32,3 +32,6 @@ keystore.properties
 # Bundled third-party binaries (download locally, do not commit)
 tools/*.exe
 tools/*.dll
+
+# Local debug screenshots
+screen_*.png

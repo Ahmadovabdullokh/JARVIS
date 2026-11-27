@@ -17,14 +17,23 @@ hiddenimports += [
     "pythoncom",
     "win32gui",
     "win32con",
+    "mediapipe",
+    "mediapipe.tasks",
+    "mediapipe.tasks.python",
+    "mediapipe.tasks.python.vision",
 ]
+hiddenimports += collect_submodules("mediapipe.tasks.python")
 
 datas = [
     ("config/config.example.json", "config"),
     ("ui", "ui"),
+    ("app/locales", "app/locales"),
+    ("plugins", "plugins"),
+    ("models", "models"),
 ]
 datas += collect_data_files("imageio_ffmpeg")
 datas += collect_data_files("webview")
+datas += collect_data_files("mediapipe")
 
 
 a = Analysis(

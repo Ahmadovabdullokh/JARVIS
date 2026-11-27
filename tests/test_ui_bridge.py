@@ -50,6 +50,23 @@ def _patch_snapshot(monkeypatch):
     )
 
 
+def test_pairing_is_not_exposed_to_remote_clients():
+    bridge = UiBridge()
+    with pytest.raises(ValueError):
+        bridge.get_pairing(consumer="remote")
+
+
+def test_pairing_payload_is_available_locally(monkeypatch):
+    from app import pairing
+
+    monkeypatch.setattr(
+        pairing,
+        "pairing_payload",
+        lambda **kwargs: {"link": "jarvis://pair?url=x"},
+    )
+    assert UiBridge().get_pairing() == {"link": "jarvis://pair?url=x"}
+
+
 def test_json_safe_handles_nested_values():
     value = {
         "text": "x" * 20,

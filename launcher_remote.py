@@ -24,6 +24,22 @@ from app.ui_bridge import UiBridge
 log = get_logger(__name__)
 
 
+def _start_tunnel():
+    try:
+        from app.tunnel import start_auto_tunnel
+
+        manager = start_auto_tunnel()
+        if manager is not None:
+            log.info("[TUNNEL] Автоподъём туннеля активен.")
+        return manager
+    except Exception as error:
+        log.info(
+            f"[TUNNEL] Автоподъём не удался: "
+            f"{type(error).__name__}: {error}"
+        )
+        return None
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     ensure_runtime_dirs()
@@ -37,6 +53,7 @@ def main(argv=None):
     host = str(remote.get("host") or "127.0.0.1").strip()
     server = RemoteServer(bridge, host=host)
     server.start()
+    bridge.attach_remote(server)
     bridge.start(start_backend=True)
 
     banner = (
@@ -49,12 +66,14 @@ def main(argv=None):
         f" токен: config.json -> remote.token "
         f"(см. scripts\\remote_info.ps1)\n"
         f" HUD при запуске: {'да (--hud)' if hud else 'нет (--no-hud)'}\n"
-        " туннель: scripts\\start_tunnel_cf.ps1\n"
+        " туннель: авто (remote.auto_tunnel) или "
+        "scripts\\start_tunnel_cf.ps1\n"
         "========================================\n"
     )
     print(banner, flush=True)
     log.info("[REMOTE LAUNCHER] %s", banner.replace("\n", " | "))
     write_status(server)
+    tunnel_manager = _start_tunnel()
 
     if hud:
         try:
@@ -76,6 +95,8 @@ def main(argv=None):
                     f"{type(error).__name__}: {error}"
                 )
             finally:
+                if tunnel_manager is not None:
+                    tunnel_manager.stop()
                 server.stop()
             return 0
 
@@ -85,6 +106,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if tunnel_manager is not None:
+            tunnel_manager.stop()
         server.stop()
         bridge.shutdown()
     return 0

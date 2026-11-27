@@ -58,16 +58,26 @@ class ToolSpec:
     timeout: float = 120.0
     tags: tuple = ()
     enabled: bool = True
+    _schema_cache: Optional[Dict[str, Any]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def schema(self) -> Dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
+        # Схема не зависит от enabled и после регистрации неизменна,
+        # поэтому строим её один раз: get_llm_tools вызывает это на
+        # каждом запросе для десятков инструментов.
+        if self._schema_cache is None:
+            self._schema_cache = {
+                "type": "function",
+                "function": {
+                    "name": self.name,
+                    "description": self.description,
+                    "parameters": self.parameters,
+                },
+            }
+        return self._schema_cache
 
     def catalog_item(self) -> Dict[str, Any]:
         return {
@@ -307,6 +317,14 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[ToolSpec]:
         with self._lock:
             return self._tools.get(str(name or "").strip())
+
+    def unregister(self, name: str) -> bool:
+        with self._lock:
+            return self._tools.pop(str(name or "").strip(), None) is not None
+
+    def names(self) -> List[str]:
+        with self._lock:
+            return list(self._tools.keys())
 
     def all(self, category: Optional[str] = None) -> List[ToolSpec]:
         with self._lock:

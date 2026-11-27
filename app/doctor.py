@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from app.paths import BASE_DIR, CONFIG_FILE, EXAMPLE_CONFIG_FILE
+from app.paths import BASE_DIR, CONFIG_FILE, EXAMPLE_CONFIG_FILE, resource_path
 
 
 def _check(name, ok, detail="", hint=""):
@@ -192,16 +192,34 @@ def run_checks():
         "icalendar": "icalendar",
         "pystray": "pystray",
         "pyttsx3": "pyttsx3",
+        "mediapipe": "mediapipe",
     }
     for module, package in optional_modules.items():
+        hint = f"pip install {package}"
+        if module == "mediapipe":
+            hint = (
+                "pip install --no-deps mediapipe==1.2.3 и "
+                "pip install absl-py~=2.3 flatbuffers~=25.9"
+            )
         checks.append(
             _check(
                 f"Опционально {package}",
                 _optional(module),
                 module,
-                f"pip install {package}",
+                hint,
             )
         )
+
+    model_path = BASE_DIR / "models" / "hand_landmarker.task"
+    bundled_model = resource_path("models", "hand_landmarker.task")
+    checks.append(
+        _check(
+            "Модель жестов",
+            model_path.exists() or bundled_model.exists(),
+            str(model_path if model_path.exists() else bundled_model),
+            "Скачайте hand_landmarker.task в models/.",
+        )
+    )
 
     if config.get("stt_local_model"):
         checks.append(

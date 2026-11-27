@@ -1,5 +1,14 @@
 {
     "jarvis_name": "JARVIS",
+    "language": "ru",
+    "active_profile": "default",
+    "profiles": {},
+    "plugins": {
+        "enabled": true,
+        "dir": "",
+        "disabled": [],
+        "allowed_permissions": []
+    },
     "wake_words": [
         "джарвис",
         "jarvis",
@@ -117,7 +126,14 @@
         "read_only": true,
         "allowed_methods": [],
         "host": "127.0.0.1",
-        "auto_start": true
+        "auto_start": true,
+        "auto_tunnel": false,
+        "public_url": "",
+        "tunnel_name": "",
+        "tunnel_protocol": "http2",
+        "rendezvous": true,
+        "rendezvous_url": "https://ntfy.sh",
+        "rendezvous_topic": ""
     },
     "tools": {
         "enabled_categories": [],
@@ -142,5 +158,63 @@
         "telegram_chat_id": "",
         "discord_webhook": "",
         "slack_webhook": ""
+    },
+    "camera": {
+        "enabled": false,
+        "source": "pc",
+        "index": 0,
+        "url": "",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "stream_fps": 30,
+        "analyze_fps": 12,
+        "jpeg_quality": 88,
+        "mirror": true,
+        "max_clients": 4,
+        "backend": "auto",
+        "fourcc": "MJPG",
+        "quality": "quality",
+        "sharpness": 0.5,
+        "upscale": false,
+        "background": true,
+        "immersive": true,
+        "fit": "cover",
+        "phone_timeout": 5.0,
+        "phone_auto_switch": true,
+        "vision_enabled": true
+    },
+    "gestures": {
+        "enabled": false,
+        "num_hands": 2,
+        "min_detection_confidence": 0.6,
+        "min_tracking_confidence": 0.5,
+        "stability_frames": 3,
+        "cooldown_ms": 900,
+        "speak_actions": true,
+        "mirror": true,
+        "profile": "media",
+        "detection_width": 256,
+        "pointer": {
+            "enabled": false,
+            "smoothing": 0.35,
+            "dead_zone": 0.012,
+            "click_cooldown_ms": 350,
+            "scroll_speed": 3,
+            "optical_flow": true
+        },
+        "dynamic": {
+            "swipe_distance": 0.17,
+            "window_ms": 450,
+            "circle_min_angle": 300,
+            "push_pull_ratio": 0.25
+        },
+        "two_hands": {
+            "enabled": true,
+            "zoom_ratio": 0.12,
+            "rotate_degrees": 18
+        },
+        "profiles": {},
+        "actions": {}
     }
 }

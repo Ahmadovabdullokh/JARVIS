@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -9,6 +10,27 @@ from app.logging import get_logger
 from app.safety import redact_secrets
 
 log = get_logger(__name__)
+
+# HTTP keep-alive: одно TLS-соединение на поток вместо нового
+# handshake на каждый запрос. Даёт заметный выигрыш для агентского
+# цикла (десятки последовательных вызовов на одном потоке), при этом
+# потокобезопасно (Session не разделяется между потоками).
+_HTTP_LOCAL = threading.local()
+
+
+def _http_session():
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=4,
+            pool_maxsize=8,
+            max_retries=0,
+        )
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _HTTP_LOCAL.session = session
+    return session
 
 PROVIDER_DEFAULTS = {
     "deepseek": {
@@ -228,7 +250,7 @@ class LLMClient:
             and str(api_url).strip() == self.fallback_api_url
         ):
             label = f"{self.label} FALLBACK"
-        response = requests.post(
+        response = _http_session().post(
             api_url,
             headers=self._headers(api_key),
             json=payload,
@@ -738,13 +760,16 @@ class LLMClient:
         }
         parts = []
         try:
-            response = requests.post(
+            response = _http_session().post(
                 api_url,
                 headers=self._headers(api_key),
                 json=payload,
                 timeout=self.request_timeout,
                 stream=True,
             )
+            # OpenAI-совместимые API отдают SSE в UTF-8 без charset;
+            # requests иначе выбирает ISO-8859-1 и ломает кириллицу.
+            response.encoding = "utf-8"
             if response.status_code != 200:
                 self.last_error = self._error_summary(
                     response.status_code,

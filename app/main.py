@@ -20,6 +20,7 @@ from app.config import (
     get_tts_config,
     get_wake_config,
 )
+from app.context import build_context
 from app.listener import VoiceListener
 from app.llm_client import LLMClient
 from app.logging import get_logger
@@ -27,6 +28,10 @@ from app.memory import Memory
 from app.observability import tracer
 from app.paths import BASE_DIR, ensure_runtime_dirs
 from app.pc_agent import PCAgent
+from app.projects import (
+    format_project_error,
+    resolve_project_reference,
+)
 from app.sessions import SessionStore
 from app.status import set_status
 from app.tts import TTS
@@ -47,8 +52,34 @@ _TRANSCRIPT_PREVIEW = False
 _SPEAK_TEXT = True
 _BARGE_IN = False
 _CHAT_MODE = "tasks"
+_TTS = None
 
 CHAT_MODES = ("chat", "tasks", "code")
+
+_PLANNING_MARKERS = (
+    "затем",
+    "потом",
+    "после",
+    "сначала",
+    "а также",
+    "и ещё",
+    "и еще",
+)
+
+
+def needs_category_planning(text: str) -> bool:
+    """Эвристика: нужен ли отдельный LLM-вызов планировщика категорий.
+
+    Короткие однозначные запросы обслуживаются подсказками
+    (hinted_tools) без лишнего сетевого раунда — это экономит заметное
+    время на слабом канале/ПК.
+    """
+
+    words = str(text or "").split()
+    if len(words) >= 6:
+        return True
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _PLANNING_MARKERS)
 
 
 def submit_chat_message(
@@ -64,6 +95,29 @@ def submit_chat_message(
         item = (*item, on_reply)
     _COMMAND_QUEUE.put(item)
     return True
+
+
+def announce(text: str) -> bool:
+    """Ставит короткое голосовое объявление в очередь JARVIS."""
+
+    text = str(text).strip()
+    if not text:
+        return False
+    _COMMAND_QUEUE.put(("announce", text))
+    return True
+
+
+def stop_speaking() -> bool:
+    """Немедленно останавливает текущую речь, не завершая ассистента."""
+
+    tts = _TTS
+    if tts is None:
+        return False
+    try:
+        tts.stop()
+        return True
+    except Exception:
+        return False
 
 
 def get_chat_mode(mode: str = None) -> str:
@@ -154,6 +208,15 @@ def cancel_task(task_id) -> bool:
         return True
     except Exception:
         return False
+
+
+def camera_look(question: str = "") -> dict:
+    """Описывает кадр с активной камеры (телефон/ПК) через Groq Vision."""
+
+    if _ACTIVE_AGENT is None:
+        raise RuntimeError("JARVIS ещё не запущен.")
+    text = _ACTIVE_AGENT.look_at_camera(question)
+    return {"text": text}
 
 
 def publish_ui_event(event_type: str, payload) -> None:
@@ -826,30 +889,44 @@ def process_command(
         max_iterations = int(
             agent_config.get("max_iterations", 18)
         )
+        resolution = resolve_project_reference(text, code_config)
+        project_error = ""
+        if resolution.status == "not_found":
+            project_error = format_project_error(resolution)
+            log.info(f"[CODE MODE] {project_error}")
+
+        target_project = ""
+        if resolution.status == "found" and resolution.path is not None:
+            target_project = str(resolution.path)
+        effective_project = target_project or str(
+            code_config.get("project") or BASE_DIR
+        ).strip()
+        pc_agent.current_project = effective_project
+
         if mode == "code":
             max_iterations = max(
                 max_iterations,
                 int(code_config.get("max_iterations", 30)),
             )
-            project = str(
-                code_config.get("project") or BASE_DIR
-            ).strip()
-            pc_agent.code_state.begin_task(
-                text,
-                project,
-                session_id=str(getattr(llm, "session_id", "") or ""),
-            )
+            if not project_error:
+                pc_agent.code_state.begin_task(
+                    text,
+                    effective_project,
+                    session_id=str(getattr(llm, "session_id", "") or ""),
+                )
 
         copilot_answer = None
-        if mode == "code" and code_backend_uses_copilot(
-            pc_agent.config
+        if (
+            not project_error
+            and mode == "code"
+            and code_backend_uses_copilot(pc_agent.config)
         ):
             copilot_answer = run_copilot_backend(pc_agent, text, trace)
             if copilot_answer is not None:
                 log.info(
                     "[CODE MODE] Ответ получен в GitHub Copilot."
                 )
-        elif mode == "code":
+        elif mode == "code" and not project_error:
             log.info(
                 "[CODE MODE] Работает DeepSeek-агент "
                 f"({llm.model})."
@@ -858,8 +935,10 @@ def process_command(
         categories = None
         if (
             copilot_answer is None
+            and not project_error
             and mode == "tasks"
             and agent_config.get("category_planning", True)
+            and needs_category_planning(text)
         ):
             categories = llm.plan_categories(
                 text,
@@ -879,18 +958,56 @@ def process_command(
             )
             + persona.mode_system_appendix(mode)
         )
-        if mode == "code" and copilot_answer is None:
-            project = str(
-                get_code_config(pc_agent.config).get("project") or ""
-            ).strip()
-            if project:
-                system += (
-                    f"\nПапка проекта по умолчанию: {project}. "
-                    "Если пользователь не назвал другой проект — "
-                    "работаешь с ним.\n"
-                )
 
-        if copilot_answer is not None:
+        rag_index = None
+        try:
+            rag_path = BASE_DIR / "data" / "rag.db"
+            if rag_path.exists():
+                from app.tools.ops import _rag
+
+                candidate = _rag()
+                if candidate.stats().get("chunks"):
+                    rag_index = candidate
+        except Exception:
+            rag_index = None
+        try:
+            context_block = build_context(
+                text,
+                memory=memory,
+                sessions=getattr(llm, "session_store", None),
+                rag=rag_index,
+            )
+        except Exception as error:
+            log.info(f"[CONTEXT] {type(error).__name__}: {error}")
+            context_block = ""
+        if context_block:
+            system += "\n\n" + context_block
+
+        if not project_error and copilot_answer is None and mode != "chat":
+            if target_project:
+                project_name = resolution.name or "проект"
+                system += (
+                    f"\nЦелевой проект: {target_project}. "
+                    "Работай только с ним и передавай "
+                    f'project="{project_name}" во все code_* '
+                    "инструменты, если пользователь не назвал другой "
+                    "проект.\n"
+                )
+            elif mode == "code":
+                project = str(
+                    code_config.get("project") or ""
+                ).strip()
+                if project:
+                    system += (
+                        f"\nПапка проекта по умолчанию: {project}. "
+                        "Если пользователь не назвал другой проект — "
+                        "работаешь с ним.\n"
+                    )
+
+        if project_error:
+            answer = project_error
+            status = "failed"
+        elif copilot_answer is not None:
             answer = copilot_answer
         elif mode == "chat":
             last_emit = [0.0]
@@ -1009,6 +1126,8 @@ def run_assistant(
     Основной цикл голосового помощника.
     """
 
+    global _TTS
+
     persona_config = persona_config or persona.normalize_config()
     wake_config = wake_config or {
         "enabled": False,
@@ -1018,6 +1137,7 @@ def run_assistant(
         "follow_up_seconds": 8.0,
     }
 
+    _TTS = tts
     log.info("[JARVIS] Ассистент запущен.")
 
     startup = persona.startup_line(persona_config)
@@ -1214,6 +1334,7 @@ def run_assistant(
                 idle_status()
     finally:
         stop_listening.set()
+        _TTS = None
         try:
             from app import telegram_bot
 

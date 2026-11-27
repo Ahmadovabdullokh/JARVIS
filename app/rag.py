@@ -33,6 +33,12 @@ def _terms(text):
     ]
 
 
+def _fts_query(text):
+    words = re.findall(r"[\w\-]+", str(text or "").lower().replace("ё", "е"))
+    quoted = [f'"{word}"' for word in words if len(word) >= 2]
+    return " OR ".join(quoted[:24])
+
+
 class RagIndex:
 
     def __init__(self, path=None):
@@ -48,6 +54,12 @@ class RagIndex:
             check_same_thread=False,
         )
         self._connection.row_factory = sqlite3.Row
+        try:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError:
+            pass
+        self._fts = False
         self._init_db()
 
     def _init_db(self):
@@ -66,6 +78,51 @@ class RagIndex:
                 """
             )
             self._connection.commit()
+        self._init_fts()
+
+    def _init_fts(self):
+        """Полнотекстовый индекс FTS5 по чанкам (без зависимостей)."""
+
+        try:
+            self._connection.executescript(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    text,
+                    content='chunks',
+                    content_rowid='id',
+                    tokenize='unicode61'
+                );
+                CREATE TRIGGER IF NOT EXISTS chunks_ai
+                    AFTER INSERT ON chunks BEGIN
+                    INSERT INTO chunks_fts(rowid, text)
+                    VALUES (new.id, new.text);
+                END;
+                CREATE TRIGGER IF NOT EXISTS chunks_ad
+                    AFTER DELETE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, text)
+                    VALUES ('delete', old.id, old.text);
+                END;
+                """
+            )
+            self._connection.commit()
+            self._fts = True
+        except sqlite3.DatabaseError:
+            self._fts = False
+            return
+        try:
+            indexed = self._connection.execute(
+                "SELECT COUNT(*) FROM chunks_fts"
+            ).fetchone()[0]
+            existing = self._connection.execute(
+                "SELECT COUNT(*) FROM chunks"
+            ).fetchone()[0]
+            if indexed == 0 and existing > 0:
+                self._connection.execute(
+                    "INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')"
+                )
+                self._connection.commit()
+        except sqlite3.DatabaseError:
+            self._fts = False
 
     def _iter_files(self, root, limit_files=2000):
         count = 0
@@ -193,6 +250,39 @@ class RagIndex:
         terms = _terms(query)
         if not terms:
             return []
+        limit = max(1, int(limit or 5))
+
+        if self._fts:
+            fts_query = _fts_query(query)
+            if fts_query:
+                try:
+                    with self._lock:
+                        rows = self._connection.execute(
+                            "SELECT c.source, c.text, "
+                            "bm25(chunks_fts) AS rank "
+                            "FROM chunks_fts "
+                            "JOIN chunks c ON c.id = chunks_fts.rowid "
+                            "WHERE chunks_fts MATCH ? "
+                            "ORDER BY rank LIMIT ?",
+                            (fts_query, limit),
+                        ).fetchall()
+                    if rows:
+                        return [
+                            {
+                                "source": row["source"],
+                                "text": row["text"],
+                                "score": round(-row["rank"], 3),
+                            }
+                            for row in rows
+                        ]
+                except sqlite3.DatabaseError:
+                    pass
+
+        return self._search_python(terms, limit)
+
+    def _search_python(self, terms, limit):
+        """Fallback-ранжирование BM25 в Python, если FTS5 недоступен."""
+
         with self._lock:
             rows = self._connection.execute(
                 "SELECT source, text FROM chunks LIMIT 5000"

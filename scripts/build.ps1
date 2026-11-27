@@ -7,6 +7,11 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw "Virtual environment not found. Run scripts\install.ps1 first."
 }
 
+$GestureModel = Join-Path $Root "models\hand_landmarker.task"
+if (-not (Test-Path -LiteralPath $GestureModel)) {
+    throw "models\hand_landmarker.task not found. Run scripts\install.ps1 first."
+}
+
 & $Python -m pip install pyinstaller
 & $Python scripts\gen_version.py
 & $Python -m PyInstaller --noconfirm jarvis.spec

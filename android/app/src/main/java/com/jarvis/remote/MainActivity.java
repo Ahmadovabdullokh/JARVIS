@@ -11,10 +11,14 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaRecorder;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -53,10 +57,16 @@ public class MainActivity extends Activity {
     private static final String PREFS = "jarvis_remote";
     private static final String KEY_URL = "server_url";
     private static final String KEY_TOKEN = "server_token";
+    private static final String KEY_FALLBACK = "server_fallback";
+    private static final String KEY_RDV_URL = "rdv_url";
+    private static final String KEY_RDV_TOPIC = "rdv_topic";
     private static final String KEY_MODE = "chat_mode";
+    static final String EXTRA_SCAN_TEXT = "com.jarvis.remote.SCAN_TEXT";
     private static final int REQ_PERMS = 1001;
+    private static final int REQ_SCAN = 1002;
     private static final long POLL_MS = 1500L;
     private static final long POLL_SLOW_MS = 5000L;
+    private static final long RDV_RETRY_MS = 30_000L;
     private static final String[] MODES = {"chat", "tasks", "code"};
 
     private static final int BG = Color.parseColor("#03060d");
@@ -86,14 +96,18 @@ public class MainActivity extends Activity {
     private EditText input;
     private ListView listView;
     private ChatAdapter adapter;
+    private AlertDialog settingsDialog;
+    private ConnectivityManager.NetworkCallback networkCallback;
 
     private volatile boolean alive = true;
     private volatile boolean online = false;
     private volatile boolean polling = false;
     private volatile int generation = 0;
     private volatile long pollDelay = POLL_MS;
+    private volatile long lastRdvAttempt = 0L;
 
     private volatile String base = "";
+    private volatile String fallbackBase = "";
     private volatile String token = "";
     private String mode = "tasks";
     private JSONArray tasks = new JSONArray();
@@ -139,9 +153,22 @@ public class MainActivity extends Activity {
                     pollDelay = POLL_MS;
                 } catch (Exception error) {
                     pollDelay = POLL_SLOW_MS;
+                    String rdv = "";
+                    if (!(error instanceof UnauthorizedException)) {
+                        rdv = maybeRefreshRendezvous();
+                    }
+                    final boolean switched =
+                            !rdv.isEmpty() && !rdv.equals(base);
+                    if (switched) {
+                        base = rdv;
+                        prefs().edit().putString(KEY_URL, rdv).apply();
+                    }
                     ui.post(() -> {
                         if (gen == generation) {
                             setOnline(false, friendly(error));
+                            if (switched) {
+                                connect();
+                            }
                         }
                     });
                 } finally {
@@ -163,14 +190,120 @@ public class MainActivity extends Activity {
 
         requestPermissions();
         startService(new Intent(this, RemoteService.class));
+        registerNetworkCallback();
 
-        base = normalizeBase(prefs().getString(KEY_URL, ""));
+        base = PairLink.normalizeBase(prefs().getString(KEY_URL, ""));
+        fallbackBase = PairLink.normalizeBase(
+                prefs().getString(KEY_FALLBACK, ""));
         token = prefs().getString(KEY_TOKEN, "").trim();
+        if (handlePairLink(getIntent())) {
+            return;
+        }
+        if (handleScannedText(getIntent().getStringExtra(EXTRA_SCAN_TEXT))) {
+            return;
+        }
         if (base.isEmpty() || token.isEmpty()) {
             ui.post(this::showSettings);
         } else {
             connect();
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String scanned = intent.getStringExtra(EXTRA_SCAN_TEXT);
+        if (!handlePairLink(intent)
+                && !(scanned != null && handleScannedText(scanned))
+                && !base.isEmpty() && !token.isEmpty()) {
+            connect();
+        }
+    }
+
+    private boolean handlePairLink(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+            return false;
+        }
+        Uri data = intent.getData();
+        final String[] pair = PairLink.parse(data);
+        if (pair == null) {
+            if (data != null && "jarvis".equals(data.getScheme())) {
+                Toast.makeText(this,
+                        "Ссылка подключения неполная: нужны url и token",
+                        Toast.LENGTH_LONG).show();
+            }
+            return false;
+        }
+        confirmPair(pair);
+        return true;
+    }
+
+    private boolean handleScannedText(String text) {
+        String raw = text == null ? "" : text.trim();
+        if (raw.isEmpty()) {
+            return false;
+        }
+        String[] pair = PairLink.parseText(raw);
+        if (pair == null) {
+            Toast.makeText(this,
+                    "QR-код не содержит ссылку подключения JARVIS",
+                    Toast.LENGTH_LONG).show();
+            return false;
+        }
+        confirmPair(pair);
+        return true;
+    }
+
+    private void confirmPair(final String[] pair) {
+        if (settingsDialog != null) {
+            settingsDialog.dismiss();
+            settingsDialog = null;
+        }
+        String message = "Адрес: " + PairLink.hostOf(pair[PairLink.URL]);
+        if (!pair[PairLink.FALLBACK].isEmpty()) {
+            message += "\nДомашняя сеть: "
+                    + PairLink.hostOf(pair[PairLink.FALLBACK]);
+        }
+        if (!pair[PairLink.RDV_TOPIC].isEmpty()) {
+            message += "\nАвтообновление адреса: включено";
+        }
+        message += "\n\nБудут сохранены новый адрес и токен доступа.";
+        new AlertDialog.Builder(this)
+                .setTitle("Подключиться к JARVIS?")
+                .setMessage(message)
+                .setPositiveButton("Подключиться", (dialog, which) -> {
+                    prefs().edit()
+                            .putString(KEY_URL, pair[PairLink.URL])
+                            .putString(KEY_TOKEN, pair[PairLink.TOKEN])
+                            .putString(KEY_FALLBACK, pair[PairLink.FALLBACK])
+                            .putString(KEY_RDV_URL, pair[PairLink.RDV_URL])
+                            .putString(KEY_RDV_TOPIC, pair[PairLink.RDV_TOPIC])
+                            .apply();
+                    ui.post(this::connect);
+                })
+                .setNegativeButton("Отмена", (dialog, which) -> {
+                    if (base.isEmpty() || token.isEmpty()) {
+                        ui.post(this::showSettings);
+                    }
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    private String clipboardText() {
+        android.content.ClipboardManager clipboard =
+                (android.content.ClipboardManager) getSystemService(
+                        Context.CLIPBOARD_SERVICE);
+        if (clipboard == null || !clipboard.hasPrimaryClip()) {
+            return "";
+        }
+        android.content.ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) {
+            return "";
+        }
+        CharSequence text = clip.getItemAt(0).coerceToText(this);
+        return text == null ? "" : text.toString();
     }
 
     private SharedPreferences prefs() {
@@ -374,6 +507,8 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, 3, 2, "Диагностика");
         popup.getMenu().add(0, 4, 3, "Настройки подключения");
         popup.getMenu().add(0, 5, 4, "Переподключить");
+        popup.getMenu().add(0, 6, 5, "Камера");
+        popup.getMenu().add(0, 7, 6, "Сканировать QR");
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1:
@@ -390,6 +525,14 @@ public class MainActivity extends Activity {
                     return true;
                 case 5:
                     connect();
+                    return true;
+                case 6:
+                    startActivity(new Intent(
+                            this, CameraActivity.class));
+                    return true;
+                case 7:
+                    startActivityForResult(new Intent(
+                            this, QrScanActivity.class), REQ_SCAN);
                     return true;
                 default:
                     return false;
@@ -414,16 +557,36 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String normalizeBase(String value) {
-        String url = value == null ? "" : value.trim();
-        while (url.endsWith("/")) {
-            url = url.substring(0, url.length() - 1);
+    private void registerNetworkCallback() {
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager) getSystemService(
+                            Context.CONNECTIVITY_SERVICE);
+            if (manager == null) {
+                return;
+            }
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    if (!online && !base.isEmpty() && !token.isEmpty()) {
+                        ui.post(() -> {
+                            if (alive && !online) {
+                                connect();
+                            }
+                        });
+                    }
+                }
+            };
+            manager.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception ignored) {
+            networkCallback = null;
         }
-        return url;
     }
 
     private void connect() {
-        base = normalizeBase(prefs().getString(KEY_URL, ""));
+        base = PairLink.normalizeBase(prefs().getString(KEY_URL, ""));
+        fallbackBase = PairLink.normalizeBase(
+                prefs().getString(KEY_FALLBACK, ""));
         token = prefs().getString(KEY_TOKEN, "").trim();
         if (base.isEmpty() || token.isEmpty()) {
             showSettings();
@@ -436,6 +599,8 @@ public class MainActivity extends Activity {
         banner.setVisibility(View.GONE);
         updateStatus("ПОДКЛЮЧЕНИЕ…", WARN);
         io.execute(() -> {
+            final String primary = base;
+            final String fallback = fallbackBase;
             try {
                 JSONObject boot = rpc("bootstrap", new JSONObject());
                 ui.post(() -> {
@@ -446,6 +611,60 @@ public class MainActivity extends Activity {
                     startPolling();
                 });
             } catch (Exception error) {
+                if (!(error instanceof UnauthorizedException)
+                        && !fallback.isEmpty()
+                        && !fallback.equals(primary)) {
+                    try {
+                        final JSONObject boot = rpcAt(
+                                fallback, "bootstrap", new JSONObject());
+                        ui.post(() -> {
+                            if (gen != generation) {
+                                return;
+                            }
+                            // Меняем адреса местами: следующий запуск
+                            // снова попробует публичный туннель первым.
+                            prefs().edit()
+                                    .putString(KEY_URL, fallback)
+                                    .putString(KEY_FALLBACK, primary)
+                                    .apply();
+                            base = fallback;
+                            fallbackBase = primary;
+                            applyBootstrap(boot);
+                            startPolling();
+                        });
+                        return;
+                    } catch (Exception ignored) {
+                        // Покажем ошибку основного адреса.
+                    }
+                }
+                if (!(error instanceof UnauthorizedException)) {
+                    // Quick tunnel мог перезапуститься с новым адресом:
+                    // берём актуальный URL из rendezvous и пробуем снова.
+                    String rdv = Rendezvous.refresh(
+                            getApplicationContext());
+                    if (!rdv.isEmpty()
+                            && !rdv.equals(primary)
+                            && !rdv.equals(fallback)) {
+                        try {
+                            final JSONObject boot = rpcAt(
+                                    rdv, "bootstrap", new JSONObject());
+                            ui.post(() -> {
+                                if (gen != generation) {
+                                    return;
+                                }
+                                prefs().edit()
+                                        .putString(KEY_URL, rdv)
+                                        .apply();
+                                base = rdv;
+                                applyBootstrap(boot);
+                                startPolling();
+                            });
+                            return;
+                        } catch (Exception ignored) {
+                            // Rendezvous-адрес тоже не ответил.
+                        }
+                    }
+                }
                 ui.post(() -> {
                     if (gen != generation) {
                         return;
@@ -453,10 +672,28 @@ public class MainActivity extends Activity {
                     setOnline(false, friendly(error));
                     if (error instanceof UnauthorizedException) {
                         showSettings();
+                    } else if (alive) {
+                        // ПК мог ещё не поднять туннель: пробуем снова,
+                        // когда JARVIS допишет актуальный адрес.
+                        ui.postDelayed(() -> {
+                            if (alive && !online
+                                    && gen == generation) {
+                                connect();
+                            }
+                        }, 15_000L);
                     }
                 });
             }
         });
+    }
+
+    private String maybeRefreshRendezvous() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastRdvAttempt < RDV_RETRY_MS) {
+            return "";
+        }
+        lastRdvAttempt = now;
+        return Rendezvous.refresh(getApplicationContext());
     }
 
     private void startPolling() {
@@ -907,17 +1144,39 @@ public class MainActivity extends Activity {
     }
 
     private void showSettings() {
+        if (settingsDialog != null) {
+            settingsDialog.dismiss();
+            settingsDialog = null;
+        }
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(20);
         layout.setPadding(pad, pad, pad, 0);
 
         TextView hint = new TextView(this);
-        hint.setText("Укажите https-адрес туннеля и токен из config.json "
-                + "(scripts\\remote_info.ps1).");
+        hint.setText("Отсканируйте QR камерой телефона "
+                + "(JARVIS на ПК → Настройки → Показать QR для телефона) "
+                + "или укажите адрес и токен вручную. Подходит адрес "
+                + "туннеля (https://…) или ПК в домашней Wi-Fi.");
         hint.setTextSize(12);
         hint.setTextColor(MUTED);
         layout.addView(hint);
+
+        TextView scanLink = new TextView(this);
+        scanLink.setText("📷 Сканировать QR камерой");
+        scanLink.setTextColor(ACCENT);
+        scanLink.setTextSize(14);
+        scanLink.setTypeface(Typeface.DEFAULT_BOLD);
+        scanLink.setPadding(0, dp(16), 0, dp(4));
+        scanLink.setOnClickListener(v -> {
+            if (settingsDialog != null) {
+                settingsDialog.dismiss();
+                settingsDialog = null;
+            }
+            startActivityForResult(
+                    new Intent(this, QrScanActivity.class), REQ_SCAN);
+        });
+        layout.addView(scanLink);
 
         EditText urlInput = new EditText(this);
         urlInput.setHint("https://abc.trycloudflare.com");
@@ -932,13 +1191,48 @@ public class MainActivity extends Activity {
         tokenInput.setText(prefs().getString(KEY_TOKEN, ""));
         layout.addView(tokenInput);
 
-        new AlertDialog.Builder(this)
+        TextView pasteLink = new TextView(this);
+        pasteLink.setText("Вставить ссылку подключения");
+        pasteLink.setTextColor(ACCENT);
+        pasteLink.setTextSize(13);
+        pasteLink.setPadding(0, dp(14), 0, dp(4));
+        pasteLink.setOnClickListener(v -> {
+            String[] pair = PairLink.parseText(clipboardText());
+            if (pair == null) {
+                Toast.makeText(this,
+                        "В буфере нет ссылки jarvis://pair?… "
+                                + "или адреса с ?token=",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            urlInput.setText(pair[0]);
+            tokenInput.setText(pair[1]);
+            Toast.makeText(this, "Ссылка подставлена — нажмите «Подключить»",
+                    Toast.LENGTH_SHORT).show();
+        });
+        layout.addView(pasteLink);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("JARVIS Remote — подключение")
                 .setView(layout)
-                .setPositiveButton("Подключить", (dialog, which) -> {
-                    String url = normalizeBase(
-                            urlInput.getText().toString());
+                .setPositiveButton("Подключить", (which, what) -> {
+                    String rawUrl = urlInput.getText().toString().trim();
                     String value = tokenInput.getText().toString().trim();
+                    // Пользователь мог вставить в поле адреса всю ссылку
+                    // jarvis://pair?… — разбираем её целиком, включая
+                    // запасной адрес и rendezvous.
+                    String fallback = "";
+                    String rdvUrl = "";
+                    String rdvTopic = "";
+                    String[] pasted = PairLink.parseText(rawUrl);
+                    if (pasted != null) {
+                        rawUrl = pasted[PairLink.URL];
+                        value = pasted[PairLink.TOKEN];
+                        fallback = pasted[PairLink.FALLBACK];
+                        rdvUrl = pasted[PairLink.RDV_URL];
+                        rdvTopic = pasted[PairLink.RDV_TOPIC];
+                    }
+                    String url = PairLink.normalizeBase(rawUrl);
                     if (url.isEmpty() || value.isEmpty()) {
                         Toast.makeText(this, "Введите адрес и токен",
                                 Toast.LENGTH_SHORT).show();
@@ -950,14 +1244,38 @@ public class MainActivity extends Activity {
                                         + "в доверенной домашней Wi-Fi сети.",
                                 Toast.LENGTH_LONG).show();
                     }
-                    prefs().edit()
-                            .putString(KEY_URL, url)
-                            .putString(KEY_TOKEN, value)
-                            .apply();
+                    android.content.SharedPreferences.Editor editor =
+                            prefs().edit()
+                                    .putString(KEY_URL, url)
+                                    .putString(KEY_TOKEN, value);
+                    if (pasted != null) {
+                        editor.putString(KEY_FALLBACK, fallback)
+                                .putString(KEY_RDV_URL, rdvUrl)
+                                .putString(KEY_RDV_TOPIC, rdvTopic);
+                    } else {
+                        editor.remove(KEY_FALLBACK)
+                                .remove(KEY_RDV_URL)
+                                .remove(KEY_RDV_TOPIC);
+                    }
+                    editor.apply();
+                    fallbackBase = PairLink.normalizeBase(fallback);
                     connect();
                 })
                 .setNegativeButton("Отмена", null)
-                .show();
+                .create();
+        settingsDialog = dialog;
+        dialog.show();
+    }
+
+    @Override
+    protected void onActivityResult(
+            int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_SCAN || resultCode != RESULT_OK
+                || data == null) {
+            return;
+        }
+        handleScannedText(data.getStringExtra(EXTRA_SCAN_TEXT));
     }
 
     private void toggleRecording() {
@@ -1119,7 +1437,13 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject rpc(String method, JSONObject payload) throws Exception {
-        String server = base;
+        return rpcAt(base, method, payload);
+    }
+
+    private JSONObject rpcAt(
+            String server, String method, JSONObject payload)
+            throws Exception {
+        server = PairLink.normalizeBase(server);
         String auth = token;
         if (server.isEmpty() || auth.isEmpty()) {
             throw new IOException("не задан адрес или токен");
@@ -1192,6 +1516,19 @@ public class MainActivity extends Activity {
         io.shutdownNow();
         if (recording) {
             releaseRecorder();
+        }
+        if (networkCallback != null) {
+            try {
+                ConnectivityManager manager =
+                        (ConnectivityManager) getSystemService(
+                                Context.CONNECTIVITY_SERVICE);
+                if (manager != null) {
+                    manager.unregisterNetworkCallback(networkCallback);
+                }
+            } catch (Exception ignored) {
+                // Служба связи уже перезапущена системой.
+            }
+            networkCallback = null;
         }
         super.onDestroy();
     }

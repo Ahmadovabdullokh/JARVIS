@@ -335,8 +335,21 @@ def register(registry):
         code = config.get("code", {}) if isinstance(config, dict) else {}
         if not isinstance(code, dict):
             code = {}
+        code_state = _code_state(registry)
+        state_project = ""
+        if code_state is not None and getattr(code_state, "active", False):
+            state_project = str(
+                getattr(code_state, "project", "") or ""
+            ).strip()
+        agent = getattr(registry.context, "agent", None)
+        agent_project = str(
+            getattr(agent, "current_project", "") or ""
+        ).strip()
         default = resolve_path(
-            code.get("project") or str(BASE_DIR),
+            state_project
+            or agent_project
+            or code.get("project")
+            or str(BASE_DIR),
             must_exist=False,
         )
         text = str(project or "").strip().strip('"').strip("'")

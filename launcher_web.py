@@ -497,6 +497,29 @@ def _start_remote_server(bridge):
         return None
 
 
+def _start_auto_tunnel(remote_server):
+    """Поднимает cloudflared и rendezvous, если включено в config.json.
+
+    ``remote.auto_tunnel`` — автоподъём туннеля при старте JARVIS;
+    ``remote.rendezvous`` — публикация адреса для телефона.
+    """
+    if remote_server is None:
+        return None
+    try:
+        from app.tunnel import start_auto_tunnel
+
+        manager = start_auto_tunnel()
+        if manager is not None:
+            log.info("[TUNNEL] Автоподъём туннеля активен.")
+        return manager
+    except Exception as error:
+        log.info(
+            f"[TUNNEL] Автоподъём не удался: "
+            f"{type(error).__name__}: {error}"
+        )
+        return None
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     smoke = "--smoke" in argv
@@ -529,9 +552,14 @@ def main(argv=None):
 
     bridge = UiBridge()
     remote_server = _start_remote_server(bridge)
+    if remote_server is not None:
+        bridge.attach_remote(remote_server)
+    tunnel_manager = _start_auto_tunnel(remote_server)
     try:
         return run_web_ui(bridge, smoke=smoke, debug=debug)
     finally:
+        if tunnel_manager is not None:
+            tunnel_manager.stop()
         if remote_server is not None:
             remote_server.stop()
 

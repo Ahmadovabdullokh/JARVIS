@@ -204,7 +204,7 @@ class LLMClientTests(unittest.TestCase):
         )
         responses = [FakeResponse(500, {}), ok_response("hello")]
         with patch(
-            "app.llm_client.requests.post",
+            "app.llm_client.requests.Session.post",
             side_effect=responses,
         ) as post:
             message = client._request({"model": "x"})
@@ -229,7 +229,7 @@ class LLMClientTests(unittest.TestCase):
         ]
 
         with patch(
-            "app.llm_client.requests.post",
+            "app.llm_client.requests.Session.post",
             side_effect=responses,
         ) as post:
             message = client._request(payload)
@@ -253,7 +253,7 @@ class LLMClientTests(unittest.TestCase):
         )
         responses = [FakeResponse(503, {}), ok_response("fallback")]
         with patch(
-            "app.llm_client.requests.post",
+            "app.llm_client.requests.Session.post",
             side_effect=responses,
         ) as post:
             message = client._request({"model": "x"})

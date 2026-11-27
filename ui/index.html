@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
@@ -67,12 +67,12 @@
       });
     })();
   </script>
-  <link rel="stylesheet" href="css/fonts.css?v=20261124b">
-  <link rel="stylesheet" href="css/tokens.css?v=20261124b">
-  <link rel="stylesheet" href="css/base.css?v=20261124b">
-  <link rel="stylesheet" href="css/layout.css?v=20261124b">
-  <link rel="stylesheet" href="css/components.css?v=20261124b">
-  <link rel="stylesheet" href="css/pages.css?v=20261124b">
+  <link rel="stylesheet" href="css/fonts.css?v=20261125b">
+  <link rel="stylesheet" href="css/tokens.css?v=20261125b">
+  <link rel="stylesheet" href="css/base.css?v=20261125b">
+  <link rel="stylesheet" href="css/layout.css?v=20261125b">
+  <link rel="stylesheet" href="css/components.css?v=20261125b">
+  <link rel="stylesheet" href="css/pages.css?v=20261125b">
 </head>
 <body>
   <div class="boot-splash" id="boot-splash">
@@ -80,6 +80,13 @@
     <div class="boot-name">J.A.R.V.I.S.</div>
     <div class="boot-sub">Инициализация систем · Mark X</div>
     <div class="boot-bar"><span></span></div>
+  </div>
+  <div class="camera-backdrop" id="camera-backdrop" aria-hidden="true">
+    <img id="camera-stream" alt="Поток с камеры" hidden>
+    <div class="camera-backdrop-wash"></div>
+    <div class="camera-backdrop-grid"></div>
+    <div class="camera-backdrop-scan"></div>
+    <div class="camera-backdrop-vignette"></div>
   </div>
   <div class="embers" aria-hidden="true">
     <span></span><span></span><span></span><span></span>
@@ -164,6 +171,12 @@
             </span>
             <span><b>Журнал</b><small>События и аудит</small></span>
           </button>
+          <button class="nav-item" data-page="camera">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h4l2-3h4l2 3h4v13H4z"/><circle cx="12" cy="13" r="4"/></svg>
+            </span>
+            <span><b>Камера</b><small>Жесты и стрим</small></span>
+          </button>
           <button class="nav-item" data-page="settings">
             <span class="nav-icon">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
@@ -210,8 +223,8 @@
             <div class="composer">
               <div class="typing-indicator" aria-hidden="true"><i></i><i></i><i></i>JARVIS ОБРАБАТЫВАЕТ</div>
               <div class="quick-actions" id="quick-actions">
-                <button data-prompt="Открой PythonProject9 в VS Code и проверь проект на ошибки">VS CODE</button>
-                <button data-prompt="Проверь код проекта PythonProject9, исправь найденные ошибки и запусти тесты">АГЕНТ КОДА</button>
+                <button data-prompt="Открой текущий проект в VS Code и проверь его на ошибки">VS CODE</button>
+                <button data-prompt="Проверь код текущего проекта, исправь найденные ошибки и запусти тесты">АГЕНТ КОДА</button>
                 <button data-prompt="Что ты умеешь? Перечисли коротко.">ЧТО ТЫ УМЕЕШЬ</button>
                 <button data-prompt="Сделай скриншот и опиши, что на экране.">ЭКРАН</button>
               </div>
@@ -344,6 +357,155 @@
           <pre class="journal-view" id="journal-list"></pre>
         </section>
 
+        <section class="page camera-page" data-page-panel="camera">
+          <div class="camera-hud" id="camera-hud">
+            <div class="camera-hud-top">
+              <div class="camera-hud-brand">
+                <span class="camera-rec" id="camera-rec"></span>
+                <b id="camera-badge">OFF</b>
+                <span id="camera-meta">Оптический контур готов.</span>
+              </div>
+              <div class="camera-hud-actions">
+                <button class="hud-button" id="camera-background-toggle" title="Камера фоном на всех страницах">ФОН ON</button>
+                <button class="hud-button" id="camera-immersive-toggle" title="Скрыть боковые панели">HUD ON</button>
+                <button class="hud-button" id="camera-settings-toggle" title="Настройки камеры">НАСТРОЙКИ</button>
+                <button class="hud-button" id="camera-fullscreen" title="Полный экран (F)">FULLSCREEN</button>
+                <button class="hud-button camera-exit" id="camera-exit" title="Вернуться в чат">ВЫЙТИ</button>
+                <button class="hud-button hud-danger" id="camera-stop">СТОП</button>
+              </div>
+            </div>
+
+            <div class="camera-hud-center">
+              <div class="camera-reticle" aria-hidden="true">
+                <i></i><i></i><i></i><i></i>
+                <span></span>
+              </div>
+              <div class="camera-placeholder" id="camera-placeholder">
+                <span class="camera-scan-ring"></span>
+                <b>Оптический контур в режиме ожидания</b>
+                <p>Включите камеру, чтобы видеть поток, жесты и HUD.</p>
+                <button class="primary-button" id="camera-toggle">Включить камеру</button>
+              </div>
+            </div>
+
+            <div class="camera-hud-bottom">
+              <div class="camera-gesture-focus">
+                <span>ПОСЛЕДНИЙ ЖЕСТ</span>
+                <b id="gesture-last">—</b>
+                <small id="gesture-action">—</small>
+              </div>
+              <div class="camera-hud-stats">
+                <div><span>ПОТОК</span><b id="camera-resolution">—</b></div>
+                <div><span>FPS</span><b id="camera-fps">0</b></div>
+                <div><span>ПРОФИЛЬ</span><b id="gesture-profile">—</b></div>
+                <div><span>КАЧЕСТВО</span><b id="camera-quality">—</b></div>
+                <div><span>ЖЕСТЫ</span><b id="gesture-state">OFF</b></div>
+              </div>
+              <button class="hud-button" id="camera-legend-toggle">ЛЕГЕНДА</button>
+            </div>
+          </div>
+
+          <aside class="camera-drawer" id="camera-drawer">
+            <div class="camera-drawer-head">
+              <div>
+                <span class="eyebrow">ОПТИЧЕСКИЙ КОНТУР</span>
+                <h2>Камера и жесты</h2>
+              </div>
+              <button class="palette-close" id="camera-drawer-close" title="Закрыть">Esc</button>
+            </div>
+            <span class="mode-chip" id="camera-state-chip">CAMERA OFF</span>
+
+            <div class="settings-card">
+              <h2>Источник</h2>
+              <label class="field">
+                <span>Режим</span>
+                <select id="camera-source" class="select">
+                  <option value="pc">Камера ПК</option>
+                  <option value="network">IP Webcam / сеть</option>
+                  <option value="phone">Камера телефона (JARVIS)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Индекс камеры ПК</span>
+                <input id="camera-index" class="input" type="number" min="0" max="8" value="0">
+              </label>
+              <label class="field">
+                <span>URL потока</span>
+                <input id="camera-url" class="input" type="text" placeholder="http://192.168.1.23:8080/video">
+              </label>
+              <label class="check-line"><input type="checkbox" id="camera-mirror" checked> Зеркалить изображение</label>
+              <div class="camera-actions">
+                <button class="primary-button" id="camera-apply">Подключить</button>
+                <button class="ghost-button" id="camera-probe">Проверить камеры</button>
+              </div>
+              <p class="camera-hint" id="camera-probe-result"></p>
+              <p class="camera-hint">Для телефона установите IP Webcam, включите сервер в фоне и вставьте URL вида http://IP:8080/video.</p>
+            </div>
+
+            <div class="settings-card">
+              <h2>Качество</h2>
+              <label class="field">
+                <span>Пресет</span>
+                <select id="camera-quality-select" class="select">
+                  <option value="performance">performance · 12 fps</option>
+                  <option value="balanced">balanced · 20 fps</option>
+                  <option value="quality" selected>quality · 30 fps + резкость</option>
+                </select>
+              </label>
+              <div class="camera-actions">
+                <button class="primary-button" id="camera-quality-apply">Применить</button>
+              </div>
+              <div class="camera-status-grid">
+                <div><span>Камера</span><b id="camera-driven">—</b></div>
+                <div><span>Backend</span><b id="camera-backend">—</b></div>
+                <div><span>Разрешение</span><b id="camera-resolution-detail">—</b></div>
+                <div><span>FPS</span><b id="camera-fps-detail">0</b></div>
+                <div><span>Клиенты</span><b id="camera-clients">0</b></div>
+              </div>
+              <p class="camera-hint">640×480 — физический максимум этой камеры. MSMF + MJPG дают ~30 fps захвата; резкость применяется к JPEG.</p>
+            </div>
+
+            <div class="settings-card">
+              <h2>Жесты</h2>
+              <div class="camera-actions">
+                <button class="ghost-button" id="gesture-toggle">Жесты OFF</button>
+              </div>
+              <label class="field">
+                <span>Профиль управления</span>
+                <select id="gesture-profile-select" class="select">
+                  <option value="media">Медиа</option>
+                  <option value="jarvis">JARVIS</option>
+                  <option value="pointer">Курсор</option>
+                  <option value="windows">Окна и браузер</option>
+                  <option value="presentation">Презентация</option>
+                </select>
+              </label>
+              <label class="check-line"><input type="checkbox" id="gesture-pointer"> Управление курсором (opt-in)</label>
+              <div class="camera-status-grid">
+                <div><span>Состояние</span><b id="gesture-state-detail">OFF</b></div>
+                <div><span>Рука</span><b id="gesture-hand">—</b></div>
+                <div><span>Последний жест</span><b id="gesture-last-detail">—</b></div>
+                <div><span>FPS</span><b id="gesture-fps">0</b></div>
+              </div>
+              <div class="gesture-legend" id="gesture-legend"></div>
+              <p class="camera-hint" id="gesture-error"></p>
+            </div>
+
+            <p class="camera-hint">Поток виден и на ПК, и на телефоне: откройте этот же интерфейс по адресу http://IP-ПК:8765.</p>
+          </aside>
+
+          <div class="camera-legend-panel" id="camera-legend-panel">
+            <div class="camera-drawer-head">
+              <div>
+                <span class="eyebrow">ЖЕСТОВЫЙ ПРОТОКОЛ</span>
+                <h2>Легенда</h2>
+              </div>
+              <button class="palette-close" id="camera-legend-close" title="Закрыть">Esc</button>
+            </div>
+            <div class="gesture-legend" id="camera-legend-body"></div>
+          </div>
+        </section>
+
         <section class="page" data-page-panel="settings">
           <div class="page-head">
             <div>
@@ -407,6 +569,17 @@
               <button class="ghost-button wide" id="run-doctor">Запустить диагностику</button>
               <button class="danger-button wide" id="stop-assistant">Аварийная остановка</button>
               <button class="danger-button wide" id="quit-app">Завершить JARVIS</button>
+            </div>
+
+            <div class="settings-card">
+              <h2>Удалённый доступ</h2>
+              <p class="camera-hint">Ссылка и QR содержат токен доступа. Показывайте QR только на своём ПК.</p>
+              <button class="primary-button wide" id="pairing-show">Показать QR для телефона</button>
+              <div class="pairing-box hidden" id="pairing-box">
+                <img class="pairing-qr" id="pairing-qr" alt="QR-код подключения" hidden>
+                <textarea class="input pairing-link" id="pairing-link" rows="3" readonly></textarea>
+                <p class="camera-hint" id="pairing-hint"></p>
+              </div>
             </div>
           </div>
         </section>
@@ -472,10 +645,10 @@
 
   <div class="toasts" id="toasts"></div>
 
-  <script src="js/api.js?v=20261124b"></script>
-  <script src="js/utils.js?v=20261124b"></script>
-  <script src="js/reactor.js?v=20261124b"></script>
-  <script src="js/app.js?v=20261124b"></script>
+  <script src="js/api.js?v=20261125b"></script>
+  <script src="js/utils.js?v=20261125b"></script>
+  <script src="js/reactor.js?v=20261125b"></script>
+  <script src="js/app.js?v=20261125b"></script>
   <script>
     setTimeout(function () {
       try {

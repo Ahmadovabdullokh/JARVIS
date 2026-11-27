@@ -48,6 +48,7 @@
     "tasks",
     "commands",
     "journal",
+    "camera",
     "settings",
   ];
 
@@ -90,6 +91,21 @@
     lastAnswer: "",
     streamIndex: null,
     code: null,
+    camera: null,
+    gesture: null,
+    cameraRenderAt: 0,
+    cameraLegendKey: "",
+    cameraStreamKey: "",
+    cameraStreamError: false,
+    cameraStreamErrorAt: 0,
+    cameraStreamLoading: false,
+    cameraBackground: true,
+    cameraImmersive: true,
+    cameraDrawerOpen: false,
+    cameraLegendOpen: false,
+    cameraProbeBusy: false,
+    lastGestureAction: "",
+    lastGestureAt: 0,
   };
 
   const els = {
@@ -181,12 +197,67 @@
     openConfig: byId("open-config"),
     openAudit: byId("open-audit"),
     runDoctor: byId("run-doctor"),
+    pairingShow: byId("pairing-show"),
+    pairingBox: byId("pairing-box"),
+    pairingQr: byId("pairing-qr"),
+    pairingLink: byId("pairing-link"),
+    pairingHint: byId("pairing-hint"),
     stopAssistant: byId("stop-assistant"),
     quitApp: byId("quit-app"),
     palette: byId("palette"),
     paletteInput: byId("palette-input"),
     paletteList: byId("palette-list"),
     paletteClose: byId("palette-close"),
+    cameraStateChip: byId("camera-state-chip"),
+    cameraToggle: byId("camera-toggle"),
+    gestureToggle: byId("gesture-toggle"),
+    cameraStream: byId("camera-stream"),
+    cameraBackdrop: byId("camera-backdrop"),
+    cameraPlaceholder: byId("camera-placeholder"),
+    cameraBadge: byId("camera-badge"),
+    cameraRec: byId("camera-rec"),
+    cameraMeta: byId("camera-meta"),
+    cameraSource: byId("camera-source"),
+    cameraIndex: byId("camera-index"),
+    cameraUrl: byId("camera-url"),
+    cameraMirror: byId("camera-mirror"),
+    cameraApply: byId("camera-apply"),
+    cameraStop: byId("camera-stop"),
+    cameraBackgroundToggle: byId("camera-background-toggle"),
+    cameraImmersiveToggle: byId("camera-immersive-toggle"),
+    cameraSettingsToggle: byId("camera-settings-toggle"),
+    cameraDrawer: byId("camera-drawer"),
+    cameraDrawerClose: byId("camera-drawer-close"),
+    cameraFullscreen: byId("camera-fullscreen"),
+    cameraExit: byId("camera-exit"),
+    cameraLegendToggle: byId("camera-legend-toggle"),
+    cameraLegendPanel: byId("camera-legend-panel"),
+    cameraLegendClose: byId("camera-legend-close"),
+    cameraLegendBody: byId("camera-legend-body"),
+    cameraQualitySelect: byId("camera-quality-select"),
+    cameraQualityApply: byId("camera-quality-apply"),
+    cameraProbe: byId("camera-probe"),
+    cameraProbeResult: byId("camera-probe-result"),
+    gestureProfileSelect: byId("gesture-profile-select"),
+    gesturePointer: byId("gesture-pointer"),
+    gestureState: byId("gesture-state"),
+    gestureStateDetail: byId("gesture-state-detail"),
+    gestureHand: byId("gesture-hand"),
+    gestureLast: byId("gesture-last"),
+    gestureLastDetail: byId("gesture-last-detail"),
+    gestureAction: byId("gesture-action"),
+    gestureProfile: byId("gesture-profile"),
+    gestureFps: byId("gesture-fps"),
+    gestureLegend: byId("gesture-legend"),
+    gestureError: byId("gesture-error"),
+    cameraDriven: byId("camera-driven"),
+    cameraBackend: byId("camera-backend"),
+    cameraResolution: byId("camera-resolution"),
+    cameraResolutionDetail: byId("camera-resolution-detail"),
+    cameraFps: byId("camera-fps"),
+    cameraFpsDetail: byId("camera-fps-detail"),
+    cameraQuality: byId("camera-quality"),
+    cameraClients: byId("camera-clients"),
   };
 
   const reactor = new window.JarvisReactor(els.reactor);
@@ -251,6 +322,8 @@
     state.preview = Boolean(data.transcript_preview);
     state.mic = Number(data.mic) || 0;
     state.micEnabled = data.mic_enabled !== false;
+    state.camera = data.camera || null;
+    state.gesture = data.gesture || null;
     setStatus(data.status || state.status);
     renderMode();
     renderTelemetry();
@@ -263,6 +336,7 @@
     renderJournal();
     renderSettings();
     renderMicToggle();
+    renderCamera();
     updateMic(state.mic);
     if (data.greeting && state.messages.length === 0) {
       els.chatEmpty.querySelector("b").textContent =
@@ -302,6 +376,15 @@
       els.previewToggle.checked = state.preview;
       els.setPreview.checked = state.preview;
     }
+    if (snapshot.camera || snapshot.gesture) {
+      if (snapshot.camera) state.camera = snapshot.camera;
+      if (snapshot.gesture) state.gesture = snapshot.gesture;
+      if (Date.now() - state.cameraRenderAt > 350) {
+        renderCamera();
+      }
+      applyCameraChrome();
+      syncCameraStream();
+    }
   }
 
   function handleEvent(event) {
@@ -340,6 +423,18 @@
         els.chatInput.value = textOf(payload);
         els.chatInput.focus();
         toast("Голос распознан — проверьте текст.", "warning");
+        break;
+      case "gesture":
+        if (payload && typeof payload === "object") {
+          state.lastGestureAction = payload.action || "none";
+          state.lastGestureAt = Date.now();
+          appendJournal(
+            "system",
+            "Жест: " + (payload.label || payload.name || "") +
+              " → " + (payload.action || "none")
+          );
+          renderCamera();
+        }
         break;
       case "command_catalog":
         state.catalog = Array.isArray(payload) ? payload : [];
@@ -513,6 +608,106 @@
       enabled = false;
     }
     applyPerfLite(enabled);
+  }
+
+  function readPref(key, fallback) {
+    try {
+      const value = localStorage.getItem(key);
+      if (value === null) return fallback;
+      return value === "1";
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function savePref(key, enabled) {
+    try {
+      localStorage.setItem(key, enabled ? "1" : "0");
+    } catch (error) {
+      /* storage is optional */
+    }
+  }
+
+  function initCameraPrefs() {
+    state.cameraBackground = readPref("jarvis.camera.background", true);
+    state.cameraImmersive = readPref("jarvis.camera.immersive", true);
+    applyCameraChrome();
+  }
+
+  function applyCameraChrome() {
+    const running = cameraRunning();
+    const onPage = state.page === "camera";
+    const background = state.cameraBackground !== false;
+    const immersive = onPage && running && state.cameraImmersive !== false;
+    const showBackdrop = running && (onPage || background);
+    document.body.classList.toggle("camera-bg", showBackdrop);
+    document.body.classList.toggle("camera-immersive", immersive);
+    document.body.classList.toggle(
+      "camera-live",
+      running && !String((state.camera || {}).error || "").trim()
+    );
+    if (els.cameraBackdrop) {
+      els.cameraBackdrop.classList.toggle("is-live", showBackdrop);
+    }
+    if (els.cameraBackgroundToggle) {
+      els.cameraBackgroundToggle.textContent = background
+        ? "ФОН ON"
+        : "ФОН OFF";
+      els.cameraBackgroundToggle.classList.toggle("active", background);
+    }
+    if (els.cameraImmersiveToggle) {
+      els.cameraImmersiveToggle.textContent =
+        state.cameraImmersive !== false ? "HUD ON" : "HUD OFF";
+      els.cameraImmersiveToggle.classList.toggle(
+        "active",
+        state.cameraImmersive !== false
+      );
+    }
+    if (els.cameraDrawer) {
+      els.cameraDrawer.classList.toggle("open", state.cameraDrawerOpen);
+    }
+    if (els.cameraLegendPanel) {
+      els.cameraLegendPanel.classList.toggle("open", state.cameraLegendOpen);
+    }
+    if (els.cameraFullscreen) {
+      const active = Boolean(
+        document.fullscreenElement || document.webkitFullscreenElement
+      );
+      els.cameraFullscreen.textContent = active ? "WINDOW" : "FULLSCREEN";
+    }
+  }
+
+  function openCameraDrawer(open) {
+    state.cameraDrawerOpen = Boolean(open);
+    if (open) state.cameraLegendOpen = false;
+    applyCameraChrome();
+  }
+
+  function openCameraLegend(open) {
+    state.cameraLegendOpen = Boolean(open);
+    if (open) state.cameraDrawerOpen = false;
+    applyCameraChrome();
+  }
+
+  function toggleCameraFullscreen() {
+    const active = Boolean(
+      document.fullscreenElement || document.webkitFullscreenElement
+    );
+    const request = document.documentElement.requestFullscreen ||
+      document.documentElement.webkitRequestFullscreen;
+    const exit = document.exitFullscreen ||
+      document.webkitExitFullscreen;
+    if (active) {
+      if (exit) exit.call(document);
+      return;
+    }
+    if (!request) {
+      toast("Fullscreen недоступен в этом окне.", "warning");
+      return;
+    }
+    Promise.resolve(request.call(document.documentElement)).catch(function () {
+      toast("Не удалось включить fullscreen.", "error");
+    });
   }
 
   function appendMessage(role, value) {
@@ -984,6 +1179,477 @@
     input.value = String(value == null ? fallback : value);
   }
 
+  function cameraRunning() {
+    return Boolean(state.camera && state.camera.running);
+  }
+
+  function gestureRunning() {
+    return Boolean(state.gesture && state.gesture.running);
+  }
+
+  function sourceLabel(source) {
+    if (source === "phone") return "Камера телефона";
+    return source === "network" ? "IP Webcam / сеть" : "Камера ПК";
+  }
+
+  function setValueIfIdle(input, value) {
+    if (!input || document.activeElement === input) return;
+    input.value = value == null ? "" : String(value);
+  }
+
+  function renderCamera() {
+    state.cameraRenderAt = Date.now();
+    const camera = state.camera || {};
+    const gesture = state.gesture || {};
+    const running = Boolean(camera.running);
+    const phoneSource = camera.source === "phone";
+    const phoneState = String(camera.phone_state || "");
+    const cameraErrorText = String(camera.error || "").trim();
+    const live = running && !cameraErrorText &&
+      (!phoneSource || phoneState === "live");
+    setValueIfIdle(els.cameraSource, camera.source || "pc");
+    setValueIfIdle(els.cameraIndex, camera.index == null ? 0 : camera.index);
+    setValueIfIdle(els.cameraUrl, camera.url || "");
+    const uiSource = els.cameraSource.value || camera.source || "pc";
+    els.cameraUrl.disabled = uiSource !== "network";
+    els.cameraIndex.disabled = uiSource !== "pc";
+    if (document.activeElement !== els.cameraMirror) {
+      els.cameraMirror.checked = camera.mirror !== false;
+    }
+    if (els.cameraStateChip) {
+      let chip = "CAMERA OFF";
+      if (live) {
+        chip = "CAMERA LIVE";
+      } else if (running) {
+        chip = phoneSource && !cameraErrorText
+          ? "CAMERA WAIT" : "CAMERA ERROR";
+      }
+      els.cameraStateChip.textContent = chip;
+      els.cameraStateChip.className =
+        "mode-chip " + (live ? "tasks" : "chat");
+    }
+    if (els.cameraToggle) {
+      els.cameraToggle.textContent = running
+        ? "Остановить камеру"
+        : "Включить камеру";
+    }
+    if (els.gestureToggle) {
+      els.gestureToggle.textContent = gesture.running
+        ? "Жесты ON"
+        : "Жесты OFF";
+      els.gestureToggle.disabled = !running;
+    }
+    const resolution =
+      camera.width && camera.height
+        ? camera.width + "x" + camera.height
+        : "—";
+    const fps = String(camera.capture_fps || camera.fps || 0);
+    if (els.cameraBadge) {
+      let badge = "OFF";
+      if (live) {
+        badge = "LIVE";
+      } else if (running) {
+        badge = phoneSource && !cameraErrorText ? "WAIT" : "ERROR";
+      }
+      els.cameraBadge.textContent = badge;
+    }
+    if (els.cameraDriven) {
+      els.cameraDriven.textContent = sourceLabel(camera.source);
+    }
+    if (els.cameraBackend) {
+      els.cameraBackend.textContent =
+        String(camera.backend || "auto").toUpperCase();
+    }
+    if (els.cameraResolution) els.cameraResolution.textContent = resolution;
+    if (els.cameraResolutionDetail) {
+      els.cameraResolutionDetail.textContent = resolution;
+    }
+    if (els.cameraFps) els.cameraFps.textContent = fps;
+    if (els.cameraFpsDetail) els.cameraFpsDetail.textContent = fps;
+    if (els.cameraQuality) {
+      els.cameraQuality.textContent = String(camera.quality || "—");
+    }
+    if (els.cameraClients) {
+      els.cameraClients.textContent = String(camera.clients || 0);
+    }
+    if (els.cameraQualitySelect && document.activeElement !==
+        els.cameraQualitySelect) {
+      els.cameraQualitySelect.value = camera.quality || "balanced";
+    }
+    const gestureState = gesture.running
+      ? (gesture.model_ready ? "ON" : "LOADING")
+      : "OFF";
+    if (els.gestureState) els.gestureState.textContent = gestureState;
+    if (els.gestureStateDetail) {
+      els.gestureStateDetail.textContent = gestureState;
+    }
+    if (els.gestureHand) els.gestureHand.textContent = gesture.hand || "—";
+    if (els.gestureLast) {
+      els.gestureLast.textContent = gesture.last_gesture_label || "—";
+    }
+    if (els.gestureLastDetail) {
+      els.gestureLastDetail.textContent =
+        gesture.last_gesture_label || "—";
+    }
+    const action = state.lastGestureAction || gesture.last_action || "";
+    if (els.gestureAction) {
+      els.gestureAction.textContent = action || "—";
+    }
+    if (els.gestureProfile) {
+      els.gestureProfile.textContent =
+        gesture.profile_label || gesture.profile || "—";
+    }
+    if (els.gestureProfileSelect &&
+        document.activeElement !== els.gestureProfileSelect) {
+      els.gestureProfileSelect.value = gesture.profile || "media";
+    }
+    if (els.gesturePointer) {
+      els.gesturePointer.checked = Boolean(
+        gesture.pointer && gesture.pointer.enabled
+      );
+    }
+    if (els.gestureFps) els.gestureFps.textContent = String(gesture.fps || 0);
+    const gestureError = String(gesture.error || "").trim();
+    if (els.gestureError) {
+      els.gestureError.textContent = gestureError;
+      els.gestureError.hidden = !gestureError;
+    }
+    if (els.cameraMeta) {
+      if (cameraErrorText) {
+        els.cameraMeta.textContent = cameraErrorText;
+      } else if (phoneSource) {
+        els.cameraMeta.textContent = phoneState === "live"
+          ? sourceLabel(camera.source) + " · " +
+            (camera.phone_device || "телефон") + " · " +
+            resolution + " · " + fps + " fps"
+          : "Ожидание кадров с телефона (приложение JARVIS).";
+      } else if (running) {
+        els.cameraMeta.textContent =
+          sourceLabel(camera.source) + " · " + resolution +
+          " · " + fps + " fps · " + (camera.quality || "balanced");
+      } else {
+        els.cameraMeta.textContent = "Оптический контур готов.";
+      }
+    }
+    if (els.cameraPlaceholder) {
+      els.cameraPlaceholder.hidden = live && !state.cameraStreamError;
+    }
+    renderGestureLegend(gesture);
+    applyCameraChrome();
+    syncCameraStream();
+  }
+
+  function renderGestureLegend(gesture) {
+    if (!els.gestureLegend && !els.cameraLegendBody) return;
+    const gestures = Array.isArray(gesture.gestures)
+      ? gesture.gestures
+      : [];
+    const actionMap = gesture.action_map || {};
+    const key = JSON.stringify([
+      gesture.profile || "media",
+      gestures,
+      actionMap,
+    ]);
+    if (key === state.cameraLegendKey) return;
+    state.cameraLegendKey = key;
+    const html = gestures.map(function (item) {
+      const name = String(item.name || "");
+      const action = String(actionMap[name] || "none");
+      return (
+        '<div class="gesture-legend-row"><b>' +
+        escapeHtml(item.label || name) +
+        "</b><span>" +
+        escapeHtml(action) +
+        "</span></div>"
+      );
+    }).join("");
+    if (els.gestureLegend) els.gestureLegend.innerHTML = html;
+    if (els.cameraLegendBody) els.cameraLegendBody.innerHTML = html;
+  }
+
+  function cameraStreamWanted() {
+    return cameraRunning() &&
+      (state.page === "camera" || state.cameraBackground !== false);
+  }
+
+  function syncCameraStream() {
+    if (!els.cameraStream) return;
+    const wanted = cameraStreamWanted();
+    const onPage = state.page === "camera";
+    if (!wanted) {
+      if (els.cameraStream.getAttribute("src")) {
+        els.cameraStream.removeAttribute("src");
+      }
+      els.cameraStream.hidden = true;
+      state.cameraStreamKey = "";
+      state.cameraStreamLoading = false;
+      if (els.cameraPlaceholder) els.cameraPlaceholder.hidden = false;
+      if (els.cameraBackdrop) els.cameraBackdrop.classList.remove("is-live");
+      applyCameraChrome();
+      return;
+    }
+    if (state.cameraStreamKey) {
+      els.cameraStream.hidden = false;
+      if (els.cameraPlaceholder) {
+        els.cameraPlaceholder.hidden = !state.cameraStreamError;
+      }
+      if (els.cameraBackdrop) {
+        els.cameraBackdrop.classList.add("is-live");
+      }
+      applyCameraChrome();
+      return;
+    }
+    if (state.cameraStreamLoading) return;
+    if (state.cameraStreamError &&
+        Date.now() - state.cameraStreamErrorAt < 5000) {
+      return;
+    }
+    state.cameraStreamLoading = true;
+    const applyUrl = function (url) {
+      state.cameraStreamLoading = false;
+      if (!url || !cameraStreamWanted()) return;
+      state.cameraStreamError = false;
+      state.cameraStreamKey = url;
+      els.cameraStream.hidden = false;
+      if (els.cameraPlaceholder) els.cameraPlaceholder.hidden = true;
+      if (els.cameraBackdrop) els.cameraBackdrop.classList.add("is-live");
+      els.cameraStream.src = url;
+      els.cameraStream.onerror = function () {
+        state.cameraStreamError = true;
+        state.cameraStreamErrorAt = Date.now();
+        state.cameraStreamKey = "";
+        els.cameraStream.hidden = true;
+        els.cameraStream.removeAttribute("src");
+        if (onPage && els.cameraPlaceholder) {
+          els.cameraPlaceholder.hidden = false;
+        }
+        if (els.cameraBackdrop) {
+          els.cameraBackdrop.classList.remove("is-live");
+        }
+        applyCameraChrome();
+      };
+      applyCameraChrome();
+    };
+    if (/^https?:$/.test(window.location.protocol)) {
+      applyUrl("/camera.mjpg?ts=" + Date.now());
+      return;
+    }
+    Api.rpc("get_camera_stream_url")
+      .then(function (data) {
+        applyUrl((data && data.url) || "");
+      })
+      .catch(function () {
+        state.cameraStreamLoading = false;
+        applyUrl("http://127.0.0.1:8765/camera.mjpg");
+      });
+  }
+
+  async function applyCamera() {
+    const source = els.cameraSource.value;
+    const url = els.cameraUrl.value.trim();
+    if (source === "network" && !url) {
+      toast("Укажите URL потока IP Webcam.", "warning");
+      return;
+    }
+    const payload = {
+      enabled: true,
+      source: source,
+      index: Number(els.cameraIndex.value) || 0,
+      url: url,
+      mirror: els.cameraMirror.checked,
+    };
+    if (source === "phone") {
+      // Телефон отдаёт готовый кадр: URL не нужен, зеркало
+      // по умолчанию выключено (иначе задняя камера отражена).
+      delete payload.url;
+      delete payload.mirror;
+    }
+    try {
+      const data = await Api.rpc("set_camera", payload);
+      applyCameraData(data);
+      toast(
+        source === "phone"
+          ? "Ждём кадры с телефона — запустите камеру в приложении."
+          : "Камера подключена.",
+        "success"
+      );
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function stopCamera() {
+    try {
+      const data = await Api.rpc("set_camera", { enabled: false });
+      applyCameraData(data);
+      toast("Камера остановлена.", "success");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  function applyCameraData(data, resetStream) {
+    if (!data) return;
+    if (data.camera) state.camera = data.camera;
+    if (data.gesture) state.gesture = data.gesture;
+    if (resetStream !== false) state.cameraStreamKey = "";
+    state.cameraStreamError = false;
+    state.cameraStreamErrorAt = 0;
+    state.cameraStreamLoading = false;
+    renderCamera();
+  }
+
+  async function toggleCamera() {
+    if (cameraRunning()) {
+      await stopCamera();
+      return;
+    }
+    await applyCamera();
+  }
+
+  async function toggleGestures() {
+    try {
+      const data = await Api.rpc("set_gestures", {
+        enabled: !gestureRunning(),
+      });
+      applyCameraData(data, false);
+      toast(
+        gestureRunning() ? "Жесты включены." : "Жесты выключены.",
+        "success"
+      );
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function setCameraQuality() {
+    if (!els.cameraQualitySelect) return;
+    const quality = els.cameraQualitySelect.value;
+    try {
+      const data = await Api.rpc("set_camera_quality", {
+        quality: quality,
+      });
+      applyCameraData(data);
+      toast("Качество камеры: " + quality + ".", "success");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function setCameraBackground(enabled) {
+    state.cameraBackground = Boolean(enabled);
+    savePref("jarvis.camera.background", state.cameraBackground);
+    applyCameraChrome();
+    syncCameraStream();
+    try {
+      await Api.rpc("set_camera_background", {
+        enabled: state.cameraBackground,
+        immersive: state.cameraImmersive !== false,
+      });
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function toggleImmersive() {
+    state.cameraImmersive = state.cameraImmersive === false;
+    savePref("jarvis.camera.immersive", state.cameraImmersive);
+    applyCameraChrome();
+    try {
+      await Api.rpc("set_camera_background", {
+        enabled: state.cameraBackground !== false,
+        immersive: state.cameraImmersive,
+      });
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function setGestureProfile(profile) {
+    try {
+      const data = await Api.rpc("set_gestures_profile", {
+        profile: profile,
+      });
+      applyCameraData(data, false);
+      if (profile === "pointer") {
+        toast("Курсор включён. Кулак или ладонь — пауза.", "warning");
+      } else {
+        toast("Профиль жестов: " + profile + ".", "success");
+      }
+    } catch (error) {
+      renderCamera();
+      toast(error.message, "error");
+    }
+  }
+
+  async function setGesturePointer(enabled) {
+    try {
+      const data = await Api.rpc("set_pointer", {
+        enabled: Boolean(enabled),
+      });
+      applyCameraData(data, false);
+      toast(
+        enabled ? "Управление курсором включено." : "Курсор выключен.",
+        enabled ? "warning" : "success"
+      );
+    } catch (error) {
+      renderCamera();
+      toast(error.message, "error");
+    }
+  }
+
+  async function probeCameras() {
+    if (state.cameraProbeBusy) return;
+    state.cameraProbeBusy = true;
+    if (els.cameraProbe) {
+      els.cameraProbe.disabled = true;
+      els.cameraProbe.textContent = "Проверка…";
+    }
+    if (els.cameraProbeResult) {
+      els.cameraProbeResult.textContent =
+        "Проверяю индексы 0–3. Это может занять несколько секунд.";
+    }
+    try {
+      const data = await Api.rpc("probe_cameras");
+      const cameras = Array.isArray(data && data.cameras)
+        ? data.cameras
+        : [];
+      if (els.cameraProbeResult) {
+        if (!cameras.length) {
+          els.cameraProbeResult.textContent = "Камеры не найдены.";
+        } else {
+          els.cameraProbeResult.textContent = cameras.map(function (item) {
+            return "#" + item.index + " · " + item.backend + " · " +
+              (item.width || "?") + "x" + (item.height || "?") +
+              " · " + (item.capture_fps || item.measured_fps || 0) +
+              " fps" + (item.blank ? " · ЧЁРНЫЙ/ВИРТУАЛЬНЫЙ" : "");
+          }).join("\n");
+        }
+      }
+      const best = cameras.find(function (item) {
+        return !item.blank && item.width && item.height;
+      });
+      if (best && els.cameraIndex) {
+        els.cameraIndex.value = String(best.index);
+      }
+      toast(
+        cameras.length ? "Проверка камер завершена." : "Камеры не найдены.",
+        cameras.length ? "success" : "warning"
+      );
+    } catch (error) {
+      toast(error.message, "error");
+      if (els.cameraProbeResult) {
+        els.cameraProbeResult.textContent = error.message;
+      }
+    } finally {
+      state.cameraProbeBusy = false;
+      if (els.cameraProbe) {
+        els.cameraProbe.disabled = false;
+        els.cameraProbe.textContent = "Проверить камеры";
+      }
+    }
+  }
+
   function renderMode() {
     const mode = MODE_LABELS[state.mode] ? state.mode : "tasks";
     state.mode = mode;
@@ -1144,22 +1810,6 @@
     }
   }
 
-  function remoteToken() {
-    var match = /[?&]token=([^&]+)/.exec(window.location.search);
-    if (match) {
-      var value = decodeURIComponent(match[1]);
-      try {
-        localStorage.setItem("jarvis_remote_token", value);
-      } catch (error) { /* storage unavailable */ }
-      return value;
-    }
-    try {
-      return localStorage.getItem("jarvis_remote_token") || "";
-    } catch (error) {
-      return "";
-    }
-  }
-
   async function toggleVoiceInput() {
     if (state.mediaRecorder &&
         state.mediaRecorder.state !== "inactive") {
@@ -1202,11 +1852,12 @@
     });
     els.micButton.disabled = true;
     try {
-      const token = remoteToken();
-      const response = await fetch(
-        "/stt?token=" + encodeURIComponent(token),
-        { method: "POST", body: blob }
-      );
+      // Авторизация — HttpOnly-cookie; токен не светим в URL.
+      const response = await fetch("/stt", {
+        method: "POST",
+        credentials: "same-origin",
+        body: blob,
+      });
       const data = await response.json().catch(function () { return {}; });
       if (!response.ok || !data.ok) {
         throw new Error(data.error || "Ошибка распознавания.");
@@ -1361,6 +2012,54 @@
     }
   }
 
+  async function showPairing() {
+    if (!els.pairingShow) return;
+    if (/^https?:$/.test(window.location.protocol)) {
+      toast("QR доступен только в приложении JARVIS на ПК.", "error");
+      return;
+    }
+    els.pairingShow.disabled = true;
+    els.pairingShow.textContent = "Готовлю QR…";
+    try {
+      const data = await Api.rpc("get_pairing");
+      els.pairingBox.classList.remove("hidden");
+      if (data.qr) {
+        els.pairingQr.src = data.qr;
+        els.pairingQr.hidden = false;
+      } else {
+        els.pairingQr.hidden = true;
+      }
+      els.pairingLink.value = data.link || "";
+      const lines = [];
+      if (data.url) {
+        const tailscalePrimary =
+          data.tailscale_url && data.url === data.tailscale_url;
+        lines.push(
+          (tailscalePrimary
+            ? "Адрес (любая сеть, Tailscale): "
+            : "Адрес: ") + data.url
+        );
+      }
+      if (data.fallback_url) {
+        lines.push("Запасной адрес (домашняя сеть): " + data.fallback_url);
+      }
+      lines.push(
+        "Отсканируйте QR приложением JARVIS или скопируйте ссылку " +
+          "и вставьте её в настройках приложения."
+      );
+      if (data.qr) {
+        lines.push("Нажмите на QR, чтобы увеличить его на экране.");
+      }
+      if (data.hint) lines.push(data.hint);
+      els.pairingHint.textContent = lines.join("\n");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      els.pairingShow.disabled = false;
+      els.pairingShow.textContent = "Показать QR для телефона";
+    }
+  }
+
   async function refreshTasks() {
     try {
       const data = await Api.rpc("poll");
@@ -1419,7 +2118,14 @@
     if (page === "commands") renderCatalog();
     if (page === "journal") renderJournal();
     if (page === "agent") renderAgent();
+    if (page === "camera") renderCamera();
     if (page === "settings") renderSettings();
+    if (page !== "camera") {
+      state.cameraDrawerOpen = false;
+      state.cameraLegendOpen = false;
+    }
+    applyCameraChrome();
+    syncCameraStream();
   }
 
   function insertPrompt(prompt) {
@@ -1681,6 +2387,71 @@
     els.journalDoctor.addEventListener("click", runDoctor);
     els.journalClear.addEventListener("click", clearJournal);
     els.settingsSave.addEventListener("click", saveSettings);
+    if (els.cameraToggle) {
+      els.cameraToggle.addEventListener("click", toggleCamera);
+      els.gestureToggle.addEventListener("click", toggleGestures);
+      els.cameraApply.addEventListener("click", applyCamera);
+      els.cameraStop.addEventListener("click", stopCamera);
+      els.cameraSource.addEventListener("change", function () {
+        const value = els.cameraSource.value;
+        els.cameraUrl.disabled = value !== "network";
+        els.cameraIndex.disabled = value !== "pc";
+      });
+    }
+    if (els.cameraBackgroundToggle) {
+      els.cameraBackgroundToggle.addEventListener("click", function () {
+        setCameraBackground(state.cameraBackground === false);
+      });
+    }
+    if (els.cameraImmersiveToggle) {
+      els.cameraImmersiveToggle.addEventListener("click", toggleImmersive);
+    }
+    if (els.cameraSettingsToggle) {
+      els.cameraSettingsToggle.addEventListener("click", function () {
+        openCameraDrawer(!state.cameraDrawerOpen);
+      });
+    }
+    if (els.cameraDrawerClose) {
+      els.cameraDrawerClose.addEventListener("click", function () {
+        openCameraDrawer(false);
+      });
+    }
+    if (els.cameraLegendToggle) {
+      els.cameraLegendToggle.addEventListener("click", function () {
+        openCameraLegend(!state.cameraLegendOpen);
+      });
+    }
+    if (els.cameraLegendClose) {
+      els.cameraLegendClose.addEventListener("click", function () {
+        openCameraLegend(false);
+      });
+    }
+    if (els.cameraFullscreen) {
+      els.cameraFullscreen.addEventListener("click", toggleCameraFullscreen);
+      document.addEventListener("fullscreenchange", applyCameraChrome);
+      document.addEventListener("webkitfullscreenchange", applyCameraChrome);
+    }
+    if (els.cameraExit) {
+      els.cameraExit.addEventListener("click", function () {
+        switchPage("chat");
+      });
+    }
+    if (els.cameraQualityApply) {
+      els.cameraQualityApply.addEventListener("click", setCameraQuality);
+    }
+    if (els.cameraProbe) {
+      els.cameraProbe.addEventListener("click", probeCameras);
+    }
+    if (els.gestureProfileSelect) {
+      els.gestureProfileSelect.addEventListener("change", function () {
+        setGestureProfile(els.gestureProfileSelect.value);
+      });
+    }
+    if (els.gesturePointer) {
+      els.gesturePointer.addEventListener("change", function () {
+        setGesturePointer(els.gesturePointer.checked);
+      });
+    }
     els.openConfig.addEventListener("click", function () {
       openPath("config");
     });
@@ -1688,6 +2459,29 @@
       openPath("audit");
     });
     els.runDoctor.addEventListener("click", runDoctor);
+    if (els.pairingShow) {
+      els.pairingShow.addEventListener("click", showPairing);
+    }
+    if (els.pairingLink) {
+      els.pairingLink.addEventListener("click", function () {
+        els.pairingLink.select();
+      });
+    }
+    if (els.pairingQr) {
+      els.pairingQr.addEventListener("click", function () {
+        if (!els.pairingQr.src || els.pairingQr.hidden) return;
+        const overlay = document.createElement("div");
+        overlay.className = "qr-overlay";
+        const image = document.createElement("img");
+        image.alt = "QR-код подключения";
+        image.src = els.pairingQr.src;
+        overlay.appendChild(image);
+        overlay.addEventListener("click", function () {
+          overlay.remove();
+        });
+        document.body.appendChild(overlay);
+      });
+    }
     els.stopAssistant.addEventListener("click", stopAssistant);
     els.quitApp.addEventListener("click", function () {
       if (window.confirm("Завершить JARVIS полностью?")) {
@@ -1742,9 +2536,30 @@
         closePalette();
         return;
       }
+      if (event.key === "Escape" && state.cameraDrawerOpen) {
+        openCameraDrawer(false);
+        return;
+      }
+      if (event.key === "Escape" && state.cameraLegendOpen) {
+        openCameraLegend(false);
+        return;
+      }
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(
+        (event.target && event.target.tagName) || ""
+      );
+      if (
+        !typing &&
+        event.key.toLowerCase() === "f" &&
+        state.page === "camera" &&
+        cameraRunning()
+      ) {
+        event.preventDefault();
+        toggleCameraFullscreen();
+        return;
+      }
       if (
         (event.ctrlKey || event.metaKey) &&
-        /^[1-6]$/.test(event.key)
+        /^[1-7]$/.test(event.key)
       ) {
         event.preventDefault();
         switchPage(PAGE_ORDER[Number(event.key) - 1]);
@@ -1755,6 +2570,7 @@
   function init() {
     wireEvents();
     initPerfLite();
+    initCameraPrefs();
     document.body.dataset.page = state.page;
     reactor.start();
     tick();
@@ -1769,6 +2585,7 @@
     renderAgent();
     renderJournal();
     renderSettings();
+    renderCamera();
     Api.rpc("client_ready").catch(function () {});
     setTimeout(hideBootSplash, 2600);
     connect();

@@ -125,6 +125,55 @@ class SafePrintTests(unittest.TestCase):
         self.assertIn(b"\xee\xf2\xe2\xe5\xf2", buffer.getvalue())
 
 
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self.status_code = 200
+        # requests выбирает ISO-8859-1 для text/* без charset=utf-8.
+        self.encoding = "ISO-8859-1"
+        self._lines = lines
+
+    def iter_lines(self, decode_unicode=False):
+        for line in self._lines:
+            if decode_unicode:
+                yield line.encode("utf-8").decode(self.encoding)
+            else:
+                yield line.encode("utf-8")
+
+
+class _FakeStreamSession:
+    def __init__(self, response):
+        self.response = response
+
+    def post(self, *args, **kwargs):
+        return self.response
+
+
+class StreamEncodingTests(unittest.TestCase):
+
+    def test_stream_decodes_utf8_without_charset_header(self):
+        payload = (
+            'data: {"choices": [{"delta": '
+            '{"content": "Привет, сэр."}}]}'
+        )
+        response = _FakeStreamResponse([payload, "data: [DONE]"])
+        client = LLMClient(api_key="test-key", use_llm=True)
+
+        with patch(
+            "app.llm_client._http_session",
+            return_value=_FakeStreamSession(response),
+        ):
+            answer = client._ask_stream_once(
+                "скажи привет",
+                None,
+                None,
+                client.api_url,
+                client.api_key,
+            )
+
+        self.assertEqual(response.encoding, "utf-8")
+        self.assertEqual(answer, "Привет, сэр.")
+
+
 class CodeToolsetTests(unittest.TestCase):
 
     def test_code_toolset_is_compact_and_relevant(self):

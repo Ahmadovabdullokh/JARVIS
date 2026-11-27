@@ -24,6 +24,15 @@ CODE_BACKENDS = ("auto", "cli", "vscode", "deepseek")
 PROVIDERS = ("deepseek", "groq", "ollama")
 
 DEFAULT_CONFIG = {
+    "language": "ru",
+    "active_profile": "default",
+    "profiles": {},
+    "plugins": {
+        "enabled": True,
+        "dir": "",
+        "disabled": [],
+        "allowed_permissions": [],
+    },
     "require_wake_word": False,
     "transcript_preview": False,
     "speak_text": True,
@@ -32,6 +41,61 @@ DEFAULT_CONFIG = {
     "tts_stream_sentences": True,
     "chat_mode": "tasks",
     "memory_size": 50,
+    "camera": {
+        "enabled": False,
+        "source": "pc",
+        "index": 0,
+        "url": "",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "stream_fps": 30,
+        "analyze_fps": 12,
+        "jpeg_quality": 88,
+        "mirror": True,
+        "max_clients": 4,
+        "backend": "auto",
+        "fourcc": "MJPG",
+        "quality": "quality",
+        "sharpness": 0.5,
+        "upscale": False,
+        "background": True,
+        "immersive": True,
+        "fit": "cover",
+    },
+    "gestures": {
+        "enabled": False,
+        "num_hands": 2,
+        "min_detection_confidence": 0.6,
+        "min_tracking_confidence": 0.5,
+        "stability_frames": 3,
+        "cooldown_ms": 900,
+        "speak_actions": True,
+        "mirror": True,
+        "profile": "media",
+        "detection_width": 256,
+        "pointer": {
+            "enabled": False,
+            "smoothing": 0.35,
+            "dead_zone": 0.012,
+            "click_cooldown_ms": 350,
+            "scroll_speed": 3,
+            "optical_flow": True,
+        },
+        "dynamic": {
+            "swipe_distance": 0.17,
+            "window_ms": 450,
+            "circle_min_angle": 300,
+            "push_pull_ratio": 0.25,
+        },
+        "two_hands": {
+            "enabled": True,
+            "zoom_ratio": 0.12,
+            "rotate_degrees": 18,
+        },
+        "profiles": {},
+        "actions": {},
+    },
     "tts_offline_fallback": True,
     "agent": {
         "autonomy": "balanced",
@@ -174,6 +238,52 @@ def save_config(config):
     )
     temp.replace(CONFIG_FILE)
     return CONFIG_FILE
+
+
+def _deep_merge(base, override):
+    """Рекурсивно сливает override в base, возвращая новый словарь."""
+
+    result = dict(base)
+    for key, value in override.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(result.get(key), dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def get_profiles(config):
+    profiles = _as_dict(_as_dict(config).get("profiles"))
+    return profiles
+
+
+def get_active_profile(config):
+    name = str(_as_dict(config).get("active_profile") or "default").strip()
+    return name or "default"
+
+
+def profile_names(config):
+    return sorted(get_profiles(config).keys())
+
+
+def apply_profile(config, name):
+    """Возвращает копию конфига с наложенным профилем ``name``.
+
+    Профиль — частичный набор настроек (например, persona, tts, safety),
+    который перекрывает базовый конфиг. Неизвестный профиль — no-op.
+    """
+
+    config = _as_dict(config)
+    name = str(name or "").strip()
+    profile = get_profiles(config).get(name)
+    if not isinstance(profile, dict):
+        return dict(config)
+    merged = _deep_merge(config, profile)
+    merged["active_profile"] = name
+    return merged
 
 
 def validate_config(config):

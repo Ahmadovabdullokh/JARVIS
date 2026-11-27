@@ -3,9 +3,19 @@ import threading
 import time
 
 from app import config as config_module
-from app import persona, telemetry, ui_theme
+from app import i18n, persona, telemetry, ui_theme
+from app.camera_service import (
+    QUALITY_PRESETS,
+    get_camera_service,
+    load_camera_settings,
+)
+from app.camera_service import probe_cameras as probe_pc_cameras
 from app.doctor import format_report, run_checks
+from app.gestures import get_gesture_service, load_gesture_settings
 from app.logging import get_logger
+from app.main import (
+    camera_look as describe_camera_frame,
+)
 from app.main import (
     cancel_task,
     drain_ui_events,
@@ -26,6 +36,7 @@ from app.main import main as run_assistant
 from app.observability import tracer
 from app.paths import CONFIG_FILE, DATA_DIR
 from app.status import get_status, set_status
+from app.tools import get_plugin_manager
 
 log = get_logger(__name__)
 
@@ -85,6 +96,12 @@ class UiBridge:
         self._last_mic = 0.0
         self._started_at = time.monotonic()
         self._event_cursors = {}
+        self._remote_url = ""
+
+    def attach_remote(self, server):
+        """Запоминает адрес remote-сервера для абсолютных ссылок HUD."""
+
+        self._remote_url = str(getattr(server, "url", "") or "")
 
     def start(self, start_backend=True):
         with self._lock:
@@ -97,6 +114,11 @@ class UiBridge:
             daemon=True,
         )
         self._mic_thread.start()
+        threading.Thread(
+            target=self._autostart_media,
+            name="JARVIS-MediaAutostart",
+            daemon=True,
+        ).start()
         if start_backend:
             self._backend_thread = threading.Thread(
                 target=self._run_backend,
@@ -105,6 +127,30 @@ class UiBridge:
             )
             self._backend_thread.start()
             self._backend_started = True
+
+    def _autostart_media(self):
+        try:
+            camera_config = load_camera_settings()
+            gesture_config = load_gesture_settings()
+            if not (
+                camera_config.get("enabled")
+                or gesture_config.get("enabled")
+            ):
+                return
+            # Источник «телефон» включается приложением: на старте ПК
+            # нечего ждать, иначе HUD висит в ожидании кадров.
+            if camera_config.get("source") == "phone":
+                camera_config["enabled"] = False
+            camera = get_camera_service()
+            if camera_config.get("enabled") and not camera.is_running():
+                camera.start(camera_config)
+            if gesture_config.get("enabled"):
+                get_gesture_service().start(gesture_config)
+        except Exception as error:
+            log.info(
+                f"[MEDIA] Автозапуск не удался: "
+                f"{type(error).__name__}: {error}"
+            )
 
     def _run_backend(self):
         try:
@@ -153,6 +199,14 @@ class UiBridge:
             self._shutdown_done = True
         self._mic_stop.set()
         try:
+            get_gesture_service().stop()
+        except Exception:
+            pass
+        try:
+            get_camera_service().stop()
+        except Exception:
+            pass
+        try:
             stop_assistant()
         except Exception:
             pass
@@ -192,12 +246,25 @@ class UiBridge:
             data["mic"] = round(self._mic_level, 4)
             self._last_mic = now
 
+        try:
+            data["camera"] = get_camera_service().status()
+            data["gesture"] = get_gesture_service().status()
+        except Exception as error:
+            data["camera"] = {"running": False, "error": str(error)}
+            data["gesture"] = {"running": False, "error": str(error)}
+
         return data
 
     def bootstrap(self):
         with self._lock:
             catalog = _json_safe(self._catalog)
         data = self._snapshot(force=True)
+        config = config_module.read_config_file()
+        try:
+            i18n.set_language(config.get("language"))
+        except Exception:
+            pass
+        manager = get_plugin_manager()
         data.update(
             {
                 "catalog": catalog,
@@ -205,6 +272,17 @@ class UiBridge:
                 "palette": self.palette(),
                 "greeting": persona.get_time_greeting(),
                 "version": "MK X",
+                "language": i18n.get_language(),
+                "languages": i18n.available_languages(),
+                "plugins": (
+                    _json_safe(manager.loaded_plugins())
+                    if manager is not None
+                    else []
+                ),
+                "profiles": {
+                    "active": config_module.get_active_profile(config),
+                    "names": config_module.profile_names(config),
+                },
             }
         )
         return data
@@ -278,6 +356,8 @@ class UiBridge:
                 config.get("silence_duration", 0.7)
             ),
             "chat_mode": str(config.get("chat_mode", "tasks")),
+            "language": str(config.get("language", "ru")),
+            "active_profile": config_module.get_active_profile(config),
         }
 
     def palette(self):
@@ -395,7 +475,13 @@ class UiBridge:
         )
         config["chat_mode"] = chat_mode
 
+        language = payload.get("language")
+        if language is not None:
+            config["language"] = i18n.set_language(language)
+
         config_module.save_config(config)
+        if language is not None:
+            i18n.set_language(config["language"])
         set_chat_mode(chat_mode)
         set_transcript_preview(
             bool(payload.get("transcript_preview", False))
@@ -509,6 +595,283 @@ class UiBridge:
         log.info(f"[WEB CLIENT] {kind}: {message}")
         return {"ok": True}
 
+    def list_plugins(self):
+        manager = get_plugin_manager()
+        if manager is None:
+            return {"plugins": [], "errors": [], "report": "Плагины недоступны."}
+        return {
+            "plugins": _json_safe(manager.loaded_plugins()),
+            "errors": [
+                {"name": name, "error": error}
+                for name, error in manager.errors
+            ],
+            "report": manager.report(),
+        }
+
+    def reload_plugins(self):
+        manager = get_plugin_manager()
+        if manager is None:
+            raise ValueError("Менеджер плагинов недоступен.")
+        loaded = manager.reload()
+        publish_ui_event("system", i18n.t("plugins.reloaded"))
+        return {"loaded": loaded, "report": manager.report()}
+
+    def get_profiles(self):
+        config = config_module.read_config_file()
+        return {
+            "active": config_module.get_active_profile(config),
+            "names": config_module.profile_names(config),
+            "profiles": _json_safe(config_module.get_profiles(config)),
+        }
+
+    def set_profile(self, payload):
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("Не указано имя профиля.")
+        config = config_module.read_config_file()
+        if name not in config_module.get_profiles(config):
+            raise ValueError(f"Профиль «{name}» не найден.")
+        updated = config_module.apply_profile(config, name)
+        config_module.save_config(updated)
+        publish_ui_event(
+            "system",
+            i18n.t("profile.changed", name=name),
+        )
+        return {"active": name}
+
+    def set_language(self, payload):
+        config = config_module.read_config_file()
+        code = i18n.set_language(payload.get("language"))
+        if config:
+            config["language"] = code
+            config_module.save_config(config)
+        return {"language": code}
+
+    # ------------------------------------------------------------------
+    # Камера и жесты
+    # ------------------------------------------------------------------
+
+    def camera_stream_url(self):
+        camera = get_camera_service()
+        base = (self._remote_url or "http://127.0.0.1:8765").rstrip("/")
+        return f"{base}/camera.mjpg?token={camera.stream_token}"
+
+    def get_camera(self):
+        return {
+            "camera": get_camera_service().status(),
+            "gesture": get_gesture_service().status(),
+            "quality_presets": sorted(QUALITY_PRESETS),
+            "stream_url": self.camera_stream_url(),
+        }
+
+    def get_camera_stream_url(self):
+        return {"url": self.camera_stream_url()}
+
+    def get_pairing(self, consumer="default"):
+        """Ссылка и QR для подключения телефона (только локально).
+
+        Токен в ссылке — секрет, поэтому удалённому клиенту метод
+        недоступен: remote_server отклоняет его до вызова моста.
+        """
+
+        if consumer == "remote":
+            raise ValueError("QR-код подключения доступен только на ПК.")
+        from app import pairing
+
+        return pairing.pairing_payload(ensure_topic=True)
+
+    def camera_look(self, payload):
+        """Описывает текущий кадр камеры через vision-модель Groq."""
+
+        question = str(payload.get("question") or "").strip()
+        return describe_camera_frame(question)
+
+    def _save_camera_config(self, updates):
+        config = config_module.read_config_file()
+        if not config:
+            return
+        section = config.get("camera")
+        section = section if isinstance(section, dict) else {}
+        section.update(updates)
+        config["camera"] = section
+        config_module.save_config(config)
+
+    def _save_gesture_config(self, updates):
+        config = config_module.read_config_file()
+        if not config:
+            return
+        section = config.get("gestures")
+        section = section if isinstance(section, dict) else {}
+        section.update(updates)
+        config["gestures"] = section
+        config_module.save_config(config)
+
+    def set_camera(self, payload):
+        camera = get_camera_service()
+        gesture = get_gesture_service()
+        enabled = bool(payload.get("enabled", True))
+        if not enabled:
+            gesture.stop()
+            camera.stop()
+            self._save_camera_config({"enabled": False})
+            return self.get_camera()
+
+        settings = load_camera_settings()
+        for key in (
+            "source",
+            "index",
+            "url",
+            "width",
+            "height",
+            "fps",
+            "stream_fps",
+            "analyze_fps",
+            "jpeg_quality",
+            "mirror",
+            "backend",
+            "fourcc",
+            "quality",
+            "sharpness",
+            "upscale",
+            "background",
+            "immersive",
+            "fit",
+            "phone_timeout",
+            "phone_auto_switch",
+        ):
+            if key in payload:
+                settings[key] = payload[key]
+        settings["enabled"] = True
+        source = settings.get("source")
+        if source == "network" and not settings.get("url"):
+            raise ValueError("Для сетевой камеры нужен URL потока.")
+        if source == "phone":
+            # Телефон отдаёт уже готовый кадр: зеркало по умолчанию
+            # выключено, иначе задняя камера показывается отражённой.
+            settings["url"] = ""
+            if "mirror" not in payload:
+                settings["mirror"] = False
+        camera.start(settings)
+        self._save_camera_config(
+            {key: settings[key] for key in settings if key != "enabled"}
+            | {"enabled": True}
+        )
+        if source == "phone":
+            # Android не вызывает set_gestures: если жесты включены
+            # в конфиге, возвращаем их после переключения на телефон.
+            gesture_config = load_gesture_settings()
+            if gesture_config.get("enabled"):
+                try:
+                    if not gesture.status().get("running"):
+                        gesture.start(gesture_config)
+                except Exception as error:
+                    log.info(
+                        "[CAMERA] Жесты не запустились: %s: %s",
+                        type(error).__name__,
+                        error,
+                    )
+        return self.get_camera()
+
+    def set_gestures(self, payload):
+        gesture = get_gesture_service()
+        enabled = bool(payload.get("enabled", True))
+        if not enabled:
+            gesture.stop()
+            self._save_gesture_config({"enabled": False})
+            return self.get_camera()
+
+        camera = get_camera_service()
+        if not camera.is_running():
+            settings = load_camera_settings()
+            settings["enabled"] = True
+            camera.start(settings)
+            self._save_camera_config({"enabled": True})
+        gesture.start()
+        profile = payload.get("profile")
+        if profile:
+            try:
+                gesture.set_profile(profile)
+                self._save_gesture_config({"profile": str(profile)})
+            except ValueError:
+                pass
+        if "pointer" in payload:
+            try:
+                gesture.set_pointer(bool(payload.get("pointer")))
+            except Exception:
+                pass
+        self._save_gesture_config({"enabled": True})
+        return self.get_camera()
+
+    def set_camera_quality(self, payload):
+        quality = str(payload.get("quality") or "balanced").strip().lower()
+        if quality not in QUALITY_PRESETS and quality != "custom":
+            raise ValueError(f"Неизвестный пресет качества: {quality}")
+        camera = get_camera_service()
+        camera.set_quality(quality)
+        self._save_camera_config({"quality": quality})
+        return self.get_camera()
+
+    def set_camera_background(self, payload):
+        enabled = bool(payload.get("enabled", True))
+        immersive = payload.get("immersive")
+        updates = {"background": enabled}
+        if immersive is not None:
+            updates["immersive"] = bool(immersive)
+        get_camera_service().update_settings(updates)
+        self._save_camera_config(updates)
+        return self.get_camera()
+
+    def set_gestures_profile(self, payload):
+        name = str(payload.get("profile") or "").strip().lower()
+        if not name:
+            raise ValueError("Не указан профиль жестов.")
+        gesture = get_gesture_service()
+        gesture.set_profile(name)
+        pointer_enabled = name == "pointer"
+        if pointer_enabled:
+            gesture.set_pointer(True)
+        config = config_module.read_config_file()
+        section = config.get("gestures")
+        section = section if isinstance(section, dict) else {}
+        section["profile"] = name
+        pointer = section.get("pointer")
+        pointer = pointer if isinstance(pointer, dict) else {}
+        pointer["enabled"] = pointer_enabled
+        section["pointer"] = pointer
+        config["gestures"] = section
+        config_module.save_config(config)
+        return self.get_camera()
+
+    def set_pointer(self, payload):
+        enabled = bool(payload.get("enabled", True))
+        gesture = get_gesture_service()
+        gesture.set_pointer(enabled)
+        config = config_module.read_config_file()
+        section = config.get("gestures")
+        section = section if isinstance(section, dict) else {}
+        pointer = section.get("pointer")
+        pointer = pointer if isinstance(pointer, dict) else {}
+        pointer["enabled"] = enabled
+        section["pointer"] = pointer
+        if enabled:
+            section["profile"] = "pointer"
+        config["gestures"] = section
+        config_module.save_config(config)
+        return self.get_camera()
+
+    def probe_cameras(self):
+        settings = load_camera_settings()
+        cameras = probe_pc_cameras(
+            width=settings.get("width", 640),
+            height=settings.get("height", 480),
+            fps=settings.get("fps", 30),
+            backend=settings.get("backend", "auto"),
+        )
+        return {
+            "cameras": cameras,
+            "camera": get_camera_service().status(),
+        }
+
     def handle(self, method, payload=None, consumer="default"):
         payload = payload if isinstance(payload, dict) else {}
         handlers = {
@@ -530,6 +893,26 @@ class UiBridge:
             "run_doctor": lambda: self.run_doctor(),
             "save_settings": lambda: self.save_settings(payload),
             "open_path": lambda: self.open_path(payload),
+            "list_plugins": lambda: self.list_plugins(),
+            "reload_plugins": lambda: self.reload_plugins(),
+            "get_profiles": lambda: self.get_profiles(),
+            "set_profile": lambda: self.set_profile(payload),
+            "set_language": lambda: self.set_language(payload),
+            "get_camera": lambda: self.get_camera(),
+            "get_camera_stream_url": lambda: self.get_camera_stream_url(),
+            "get_pairing": lambda: self.get_pairing(consumer),
+            "camera_look": lambda: self.camera_look(payload),
+            "set_camera": lambda: self.set_camera(payload),
+            "set_camera_quality": lambda: self.set_camera_quality(payload),
+            "set_camera_background": lambda: self.set_camera_background(
+                payload
+            ),
+            "probe_cameras": lambda: self.probe_cameras(),
+            "set_gestures": lambda: self.set_gestures(payload),
+            "set_gestures_profile": lambda: self.set_gestures_profile(
+                payload
+            ),
+            "set_pointer": lambda: self.set_pointer(payload),
         }
         handler = handlers.get(str(method))
         if handler is None:

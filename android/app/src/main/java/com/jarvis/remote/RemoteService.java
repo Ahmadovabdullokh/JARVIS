@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -26,14 +27,21 @@ public class RemoteService extends Service {
     private static final String CHANNEL = "jarvis_status";
     private static final int NOTIFICATION_ID = 42;
     private static final long CHECK_INTERVAL_MS = 30_000L;
+    private static final long RDV_RETRY_MS = 60_000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private boolean online = false;
+    private volatile boolean online = false;
+    private volatile boolean checking = false;
+    private volatile long lastRdvAttempt = 0L;
 
     private final Runnable healthCheck = new Runnable() {
         @Override
         public void run() {
-            checkHealth();
+            if (!checking) {
+                checking = true;
+                new Thread(RemoteService.this::checkHealth,
+                        "JARVIS-Health").start();
+            }
             handler.postDelayed(this, CHECK_INTERVAL_MS);
         }
     };
@@ -71,25 +79,47 @@ public class RemoteService extends Service {
     }
 
     private void checkHealth() {
-        String base = serverBase();
-        boolean reachable = false;
-        if (!base.isEmpty()) {
-            HttpURLConnection conn = null;
-            try {
-                conn = (HttpURLConnection) new URL(base + "/health").openConnection();
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(5000);
-                conn.setRequestMethod("GET");
-                reachable = conn.getResponseCode() == 200;
-            } catch (Exception ignored) {
-                reachable = false;
-            } finally {
-                if (conn != null) {
-                    conn.disconnect();
+        try {
+            String base = serverBase();
+            boolean reachable = ping(base);
+            if (!reachable) {
+                // Quick tunnel мог подняться с новым адресом: спрашиваем
+                // rendezvous (зашифрованный ntfy-топик), но не чаще раза
+                // в минуту, чтобы не тратить батарею.
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastRdvAttempt >= RDV_RETRY_MS) {
+                    lastRdvAttempt = now;
+                    String updated = Rendezvous.refresh(
+                            getApplicationContext());
+                    if (!updated.isEmpty() && !updated.equals(base)) {
+                        reachable = ping(updated);
+                    }
                 }
             }
+            setOnline(reachable);
+        } finally {
+            checking = false;
         }
-        setOnline(reachable);
+    }
+
+    private boolean ping(String base) {
+        if (base == null || base.isEmpty()) {
+            return false;
+        }
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(base + "/health").openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            conn.setRequestMethod("GET");
+            return conn.getResponseCode() == 200;
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
     }
 
     private void setOnline(boolean value) {

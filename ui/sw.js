@@ -3,7 +3,7 @@
  * RPC (/rpc), /stt и любые POST не кэшируются и не перехватываются.
  */
 
-var CACHE = "jarvis-shell-v4";
+var CACHE = "jarvis-shell-v6";
 var SHELL = [
   "./",
   "./index.html",
@@ -56,8 +56,10 @@ self.addEventListener("fetch", function (event) {
   if (url.origin !== self.location.origin) {
     return;
   }
-  /* API и health не кэшируем — всегда сеть */
-  if (url.pathname === "/rpc" || url.pathname === "/stt" || url.pathname === "/health") {
+  /* API, health и MJPEG-поток не кэшируем — всегда сеть */
+  if (url.pathname === "/rpc" || url.pathname === "/stt" ||
+      url.pathname === "/health" || url.pathname === "/camera.mjpg" ||
+      url.pathname === "/camera/frame") {
     return;
   }
   /* Статика: network-first, при офлайне — из кэша */
