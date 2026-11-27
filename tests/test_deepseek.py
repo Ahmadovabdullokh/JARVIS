@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import unittest
 from pathlib import Path
@@ -6,9 +7,19 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app import main as assistant_main
-from app.llm_client import LLMClient
+from app.llm_client import LLMClient, parse_dsml_tool_calls
 from app.pc_agent import PCAgent
 from app.utils import safe_print
+
+DSML_LOOK_AT_CAMERA = (
+    "<｜｜DSML｜｜ calls>\n"
+    '<｜｜DSML｜｜ invoke name="look_at_camera">\n'
+    '<｜｜DSML｜｜ parameter name="question" string="true">'
+    "Что человек держит в руках? Опиши предмет."
+    "</｜｜DSML｜｜ parameter>\n"
+    "</｜｜DSML｜｜ invoke>\n"
+    "</｜｜DSML｜｜ calls>"
+)
 
 
 class DeepSeekProviderTests(unittest.TestCase):
@@ -52,6 +63,96 @@ class DeepSeekProviderTests(unittest.TestCase):
         self.assertEqual(payloads[0]["model"], "deepseek-chat")
         self.assertNotIn("parallel_tool_calls", payloads[0])
         self.assertEqual(payloads[0]["tool_choice"], "auto")
+
+
+class DsmlToolCallTests(unittest.TestCase):
+
+    def test_dsml_invoke_is_parsed_into_tool_call(self):
+        calls, cleaned = parse_dsml_tool_calls(DSML_LOOK_AT_CAMERA)
+        self.assertEqual(len(calls), 1)
+        function = calls[0]["function"]
+        self.assertEqual(function["name"], "look_at_camera")
+        arguments = json.loads(function["arguments"])
+        self.assertEqual(
+            arguments["question"],
+            "Что человек держит в руках? Опиши предмет.",
+        )
+        self.assertEqual(cleaned, "")
+
+    def test_plain_answer_is_untouched(self):
+        calls, cleaned = parse_dsml_tool_calls("Просто ответ")
+        self.assertEqual(calls, [])
+        self.assertEqual(cleaned, "Просто ответ")
+
+    def test_non_string_parameter_is_json_decoded(self):
+        text = (
+            "<｜DSML｜ calls>"
+            '<｜DSML｜ invoke name="set_volume">'
+            '<｜DSML｜ parameter name="level">42</｜DSML｜ parameter>'
+            "</｜DSML｜ invoke></｜DSML｜ calls>"
+        )
+        calls, _ = parse_dsml_tool_calls(text)
+        self.assertEqual(
+            json.loads(calls[0]["function"]["arguments"]),
+            {"level": 42},
+        )
+
+    def test_ask_with_tools_executes_dsml_call(self):
+        client = LLMClient(api_key="test-key", use_llm=True)
+        responses = [
+            {"content": DSML_LOOK_AT_CAMERA, "tool_calls": []},
+            {"content": "В руках у вас кружка."},
+        ]
+        payloads = []
+        executed = []
+
+        def fake_request(payload, api_url=None, api_key=None):
+            payloads.append(payload)
+            return responses.pop(0)
+
+        def executor(name, arguments):
+            executed.append((name, arguments))
+            return "В кадре человек с кружкой."
+
+        with patch.object(client, "_request", fake_request):
+            answer = client.ask_with_tools(
+                prompt="что у меня в руках?",
+                system="",
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {"name": "look_at_camera"},
+                    }
+                ],
+                tool_executor=executor,
+                max_iterations=3,
+            )
+
+        self.assertEqual(answer, "В руках у вас кружка.")
+        self.assertEqual([name for name, _ in executed], ["look_at_camera"])
+        self.assertEqual(
+            executed[0][1]["question"],
+            "Что человек держит в руках? Опиши предмет.",
+        )
+        self.assertNotIn("DSML", answer)
+        assistant_message = next(
+            message
+            for message in payloads[1]["messages"]
+            if message.get("role") == "assistant"
+        )
+        self.assertEqual(
+            assistant_message["tool_calls"][0]["function"]["name"],
+            "look_at_camera",
+        )
+
+    def test_ask_does_not_return_dsml_markup(self):
+        client = LLMClient(api_key="test-key", use_llm=True)
+
+        def fake_request(payload, api_url=None, api_key=None):
+            return {"content": DSML_LOOK_AT_CAMERA}
+
+        with patch.object(client, "_request", fake_request):
+            self.assertEqual(client.ask("привет"), "")
 
 
 class DeepSeekConfigTests(unittest.TestCase):
@@ -107,6 +208,27 @@ class DeepSeekConfigTests(unittest.TestCase):
         self.assertEqual(config["provider"], "groq")
         self.assertEqual(config["api_key"], "groq-key")
         self.assertEqual(config["model"], "openai/gpt-oss-120b")
+
+    def test_groq_fallback_reuses_groq_key_when_unset(self):
+        with patch.dict(
+            os.environ,
+            {"GROQ_API_KEY": "groq-key"},
+            clear=False,
+        ):
+            config = assistant_main.get_llm_config(
+                {
+                    "llm": {
+                        "provider": "deepseek",
+                        "fallback_base_url": (
+                            "https://api.groq.com/openai/v1/"
+                            "chat/completions"
+                        ),
+                        "fallback_model": "openai/gpt-oss-120b",
+                    }
+                }
+            )
+
+        self.assertEqual(config["fallback_api_key"], "groq-key")
 
 
 class SafePrintTests(unittest.TestCase):

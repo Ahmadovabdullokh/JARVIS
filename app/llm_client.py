@@ -54,6 +54,82 @@ PROVIDER_ALIASES = {
     "deepseek_api": "deepseek",
 }
 
+# DeepSeek-V3.2 иногда возвращает вызов инструмента не в поле
+# tool_calls, а текстом в собственном DSML-формате:
+#   <｜DSML｜ calls><｜DSML｜ invoke name="look_at_camera">
+#   <｜DSML｜ parameter name="question" string="true">…</…>
+# Тогда вызов уходил в чат как обычный ответ, и инструмент не
+# выполнялся. Разбираем такой текст и превращаем в tool_calls.
+_DSML = r"[｜|]{1,2}\s*DSML\s*[｜|]{1,2}"
+_DSML_BLOCK_RE = re.compile(
+    rf"<{_DSML}\s*(?:tool_)?calls\s*>.*?</{_DSML}\s*(?:tool_)?calls\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_INVOKE_RE = re.compile(
+    rf"<{_DSML}\s*invoke\s+name=\"([^\"]+)\"\s*>(.*?)"
+    rf"</{_DSML}\s*invoke\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_PARAM_RE = re.compile(
+    rf"<{_DSML}\s*parameter\s+name=\"([^\"]+)\"\s*"
+    rf"(?:string=\"(true|false)\")?\s*>(.*?)"
+    rf"</{_DSML}\s*parameter\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_ANY_TAG_RE = re.compile(rf"</?{_DSML}\s*[^>]*>", re.IGNORECASE)
+
+
+def _strip_dsml(text):
+    """Убирает DSML-разметку из текста ответа."""
+
+    if not text or "DSML" not in text:
+        return text
+    cleaned = _DSML_BLOCK_RE.sub("", text)
+    cleaned = _DSML_ANY_TAG_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def parse_dsml_tool_calls(content):
+    """Достаёт tool_calls из DSML-текста DeepSeek.
+
+    Возвращает (tool_calls, очищенный_текст). Если разметки нет,
+    tool_calls пуст, а текст не меняется.
+    """
+
+    text = content if isinstance(content, str) else ""
+    if "DSML" not in text:
+        return [], content
+
+    calls = []
+    for index, match in enumerate(_DSML_INVOKE_RE.finditer(text), start=1):
+        name = match.group(1).strip()
+        if not name:
+            continue
+        arguments = {}
+        for param in _DSML_PARAM_RE.finditer(match.group(2)):
+            key = param.group(1).strip()
+            if not key:
+                continue
+            raw = param.group(3).strip()
+            if (param.group(2) or "").lower() == "true":
+                arguments[key] = raw
+                continue
+            try:
+                arguments[key] = json.loads(raw)
+            except ValueError:
+                arguments[key] = raw
+        calls.append(
+            {
+                "id": f"dsml_{index}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        )
+    return calls, _strip_dsml(text)
+
 DEFAULT_UNTRUSTED_TOOLS = {
     "browser_fetch_text",
     "browser_fetch_links",
@@ -708,7 +784,9 @@ class LLMClient:
             message = self._request(payload)
             if not message:
                 return ""
-            answer = (message.get("content") or "").strip()
+            answer = _strip_dsml(
+                message.get("content") or ""
+            ).strip()
             if answer:
                 self._append_history(prompt, answer)
             return answer
@@ -814,7 +892,7 @@ class LLMClient:
             self._handle_request_error(error)
             return ""
 
-        answer = "".join(parts).strip()
+        answer = _strip_dsml("".join(parts)).strip()
         if answer:
             self._append_history(prompt, answer)
         return answer
@@ -1089,6 +1167,20 @@ class LLMClient:
                 return ""
 
             tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                dsml_calls, cleaned = parse_dsml_tool_calls(
+                    message.get("content") or ""
+                )
+                if dsml_calls:
+                    log.info(
+                        f"[{self.label}] DSML-вызовы инструментов: "
+                        + ", ".join(
+                            call["function"]["name"]
+                            for call in dsml_calls
+                        )
+                    )
+                    message["content"] = cleaned
+                    message["tool_calls"] = tool_calls = dsml_calls
 
             if not tool_calls:
                 active = code_state is not None and getattr(
@@ -1130,7 +1222,9 @@ class LLMClient:
                     })
                     sync_state_message()
                     continue
-                answer = (message.get("content") or "").strip()
+                answer = _strip_dsml(
+                    message.get("content") or ""
+                ).strip()
                 if changed and not verified:
                     answer += (
                         "\n\n[Внимание] Проверка изменений не пройдена."

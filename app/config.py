@@ -521,6 +521,17 @@ def get_llm_config(config: dict) -> dict:
     fallback_model = str(llm.get("fallback_model") or "").strip()
     fallback_api_key = str(llm.get("fallback_api_key") or "").strip()
 
+    # Резервный Groq-эндпоинт без отдельного ключа должен брать
+    # GROQ_API_KEY: иначе каждый переход на fallback даёт 401.
+    if (
+        fallback_base_url
+        and not fallback_api_key
+        and "api.groq.com" in fallback_base_url
+    ):
+        fallback_api_key = str(
+            config.get("groq_api_key") or os.getenv("GROQ_API_KEY") or ""
+        )
+
     if (
         provider == "deepseek"
         and not fallback_base_url
