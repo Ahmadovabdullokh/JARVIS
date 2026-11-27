@@ -90,6 +90,7 @@ class JarvisWindow:
 
         self.running = True
         self.jarvis_dead = False
+        self._event_cursor = 0
         self.time = 0.0
         self.current_status = None
         self.mic_level = 0.0
@@ -1976,8 +1977,12 @@ class JarvisWindow:
     def poll_ui_events(self):
         if not self.running:
             return
-
-        for event_type, payload in drain_ui_events():
+        try:
+            events = list(drain_ui_events(self._event_cursor))
+        except Exception:
+            events = []
+        for seq, event_type, payload in events:
+            self._event_cursor = seq
             if event_type in {"user", "assistant", "error"}:
                 self._append_chat_message(event_type, str(payload))
                 if event_type != "user":

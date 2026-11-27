@@ -152,6 +152,8 @@ def set_microphone_enabled(enabled: bool) -> bool:
     if listener is not None:
         try:
             listener.mic_disabled = not _MIC_ENABLED
+            if not _MIC_ENABLED:
+                listener.close_meter()
         except Exception:
             pass
     set_status("listening" if _MIC_ENABLED else "mic_off")
@@ -221,6 +223,14 @@ def camera_look(question: str = "") -> dict:
 
 def publish_ui_event(event_type: str, payload) -> None:
     with _UI_EVENTS_LOCK:
+        if event_type == "assistant_partial":
+            # Частичный ответ — снимок одного и того же сообщения.
+            # Храним только последний, иначе длинная стриминговая
+            # выдача копит тысячи почти одинаковых строк.
+            for offset, item in enumerate(reversed(_UI_EVENTS)):
+                if item[1] == "assistant_partial":
+                    del _UI_EVENTS[len(_UI_EVENTS) - 1 - offset]
+                    break
         _UI_EVENTS.append((next(_UI_EVENT_SEQ), event_type, payload))
 
 
@@ -228,15 +238,19 @@ def drain_ui_events(after_seq: int = 0):
     """Возвращает события с seq > after_seq как (seq, type, payload).
 
     Очередь не очищается: каждый потребитель (HUD на ПК, мобильный
-    клиент) хранит свой курсор и получает все события.
+    клиент) хранит свой курсор и получает все события. События
+    упорядочены по seq, поэтому скан идёт с конца и останавливается
+    на курсоре — опрос у хвоста стоит O(новых событий), а не O(20к).
     """
 
     with _UI_EVENTS_LOCK:
-        return [
-            (seq, event_type, payload)
-            for seq, event_type, payload in _UI_EVENTS
-            if seq > after_seq
-        ]
+        recent = []
+        for seq, event_type, payload in reversed(_UI_EVENTS):
+            if seq <= after_seq:
+                break
+            recent.append((seq, event_type, payload))
+    recent.reverse()
+    return recent
 
 
 def stop_assistant(emergency: bool = False) -> None:
@@ -259,6 +273,17 @@ def stop_assistant(emergency: bool = False) -> None:
             pass
         try:
             _ACTIVE_AGENT.tasks.cancel_all()
+        except Exception:
+            pass
+        try:
+            # Отложенные записи журнала не должны потеряться при остановке.
+            _ACTIVE_AGENT.tasks.flush()
+        except Exception:
+            pass
+    listener = _LISTENER
+    if listener is not None:
+        try:
+            listener.close_meter()
         except Exception:
             pass
 
@@ -1347,10 +1372,16 @@ def run_assistant(
             pass
         try:
             pc_agent.tasks.cancel_all()
+            pc_agent.tasks.flush()
+            pc_agent.tasks.shutdown()
         except Exception:
             pass
         try:
             pc_agent.registry.close()
+        except Exception:
+            pass
+        try:
+            listener.close_meter()
         except Exception:
             pass
         global _ACTIVE_AGENT

@@ -1,5 +1,6 @@
 import io
 import queue
+import threading
 import time
 import wave
 
@@ -59,6 +60,14 @@ class VoiceListener:
         self.client = Groq(api_key=api_key) if api_key else None
         self.local_model = None
         self._prompt_supported = True
+
+        # Постоянный поток-индикатор: раньше measure_level() открывал
+        # и закрывал sd.InputStream по 3-4 раза в секунду, что на
+        # Windows дёргало WASAPI и жгло CPU.
+        self._meter_lock = threading.RLock()
+        self._meter_stream = None
+        self._meter_level = 0.0
+        self._meter_at = 0.0
 
         if self.local_model_name:
             try:
@@ -439,57 +448,81 @@ class VoiceListener:
 
             return ""
 
+    def _meter_callback(self, indata, frames, time_info, status):
+        try:
+            block = np.squeeze(
+                np.asarray(indata, dtype=np.float32)
+            )
+            self._meter_level = float(
+                np.sqrt(np.mean(block ** 2))
+            )
+            self._meter_at = time.monotonic()
+        except Exception:
+            pass
+
+    def _meter_is_active(self, stream):
+        try:
+            return bool(stream.active)
+        except Exception:
+            return False
+
+    def _ensure_meter_stream(self):
+        """Открывает поток-индикатор один раз и переиспользует его."""
+
+        stream = self._meter_stream
+        if stream is not None:
+            if self._meter_is_active(stream):
+                return stream
+            self.close_meter()
+
+        stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=800,
+            callback=self._meter_callback,
+        )
+        stream.start()
+        self._meter_stream = stream
+        return stream
+
+    def close_meter(self):
+        """Закрывает поток-индикатор (выключение микрофона, выход)."""
+
+        with self._meter_lock:
+            stream = self._meter_stream
+            self._meter_stream = None
+        if stream is None:
+            return
+        for method in ("stop", "close"):
+            try:
+                getattr(stream, method)()
+            except Exception:
+                pass
+
     def measure_level(self, seconds=0.3):
-        """Короткий замер громкости микрофона для индикатора UI."""
+        """Громкость микрофона для индикатора UI (последний блок).
+
+        `seconds` оставлен для совместимости: раньше метод открывал
+        поток и читал несколько блоков, теперь уровень приходит из
+        постоянного потока.
+        """
 
         if not self.enabled or self.mic_disabled:
             return 0.0
 
         try:
-
-            frames = []
-
-            stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=800,
-            )
-
-            stream.start()
-
-            try:
-
-                start = time.monotonic()
-
-                while (
-                    time.monotonic() - start
-                    < max(0.1, float(seconds or 0.3))
-                ):
-                    frames.append(
-                        np.squeeze(
-                            stream.read(800)[0]
-                        )
-                    )
-
-            finally:
-
-                stream.stop()
-                stream.close()
-
-            if not frames:
-                return 0.0
-
-            audio = np.concatenate(frames)
-
-            return float(
-                np.sqrt(
-                    np.mean(
-                        audio ** 2
-                    )
-                )
-            )
-
+            with self._meter_lock:
+                stream = self._ensure_meter_stream()
         except Exception:
-
+            self.close_meter()
             return 0.0
+
+        if stream is None:
+            return 0.0
+
+        if time.monotonic() - self._meter_at > 0.5:
+            # Колбэк ещё не успел получить первый блок.
+            time.sleep(0.05)
+
+        return float(self._meter_level)

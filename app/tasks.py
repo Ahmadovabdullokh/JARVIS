@@ -1,7 +1,9 @@
+import atexit
 import json
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -9,9 +11,25 @@ from app import notifier
 from app.paths import DATA_DIR
 
 
+def _flush_at_exit(ref):
+    manager = ref()
+    if manager is None:
+        return
+    try:
+        manager.flush()
+    except Exception:
+        pass
+
+
 class TaskManager:
 
-    def __init__(self, path=None, max_tasks=200, max_workers=4):
+    def __init__(
+        self,
+        path=None,
+        max_tasks=200,
+        max_workers=4,
+        save_delay=0.75,
+    ):
         self.path = (
             Path(path)
             if path
@@ -25,6 +43,11 @@ class TaskManager:
             thread_name_prefix="JARVIS-Task",
         )
         self._futures = {}
+        self._save_delay = max(0.0, float(save_delay or 0.0))
+        self._dirty = False
+        self._last_write = 0.0
+        self._save_timer = None
+        atexit.register(_flush_at_exit, weakref.ref(self))
 
     def _load(self):
         if not self.path.exists():
@@ -39,7 +62,8 @@ class TaskManager:
             return {}
         return data
 
-    def _save(self):
+    def _write(self):
+        """Пишет журнал на диск. Вызывается под self._lock."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_suffix(".tmp")
@@ -55,6 +79,64 @@ class TaskManager:
             temp.replace(self.path)
         except OSError as error:
             print(f"[TASK SAVE ERROR] {error}")
+            return False
+        return True
+
+    def _save(self, force=False):
+        """Помечает журнал изменённым и пишет его не чаще save_delay.
+
+        Раньше каждый add_step/update перезаписывал весь tasks.json;
+        агентский цикл делал это десятки раз за один запуск. Теперь
+        запись объединяется по времени, а force используется на
+        финальных статусах.
+        """
+
+        self._dirty = True
+        now = time.monotonic()
+        elapsed = now - self._last_write
+        if force or self._save_delay <= 0 or elapsed >= self._save_delay:
+            if self._write():
+                self._dirty = False
+                self._last_write = now
+            return
+        timer = self._save_timer
+        if timer is not None and timer.is_alive():
+            return
+        delay = max(0.01, self._save_delay - elapsed)
+        timer = threading.Timer(delay, self._flush_from_timer)
+        timer.daemon = True
+        self._save_timer = timer
+        timer.start()
+
+    def _flush_from_timer(self):
+        with self._lock:
+            self._save_timer = None
+            if not self._dirty:
+                return
+            if not self.path.parent.exists():
+                # Каталог исчез (тесты/перенос) — не пересоздаём его.
+                return
+            if self._write():
+                self._dirty = False
+                self._last_write = time.monotonic()
+
+    def flush(self):
+        """Принудительно сохраняет журнал (границы задач, выход)."""
+
+        with self._lock:
+            timer = self._save_timer
+            if timer is not None:
+                timer.cancel()
+                self._save_timer = None
+            if not self._dirty:
+                return
+            if self._write():
+                self._dirty = False
+                self._last_write = time.monotonic()
+
+    def shutdown(self):
+        self.flush()
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _trim(self):
         if len(self._tasks) <= self.max_tasks:
@@ -139,6 +221,7 @@ class TaskManager:
             status="done",
             result=str(result or ""),
         )
+        self.flush()
         self._notify_if_background(task, "done", result)
         return task
 
@@ -148,6 +231,7 @@ class TaskManager:
             status="failed",
             error=str(error or ""),
         )
+        self.flush()
         self._notify_if_background(task, "failed", error)
         return task
 
@@ -157,18 +241,37 @@ class TaskManager:
         if future is not None:
             future.cancel()
         task = self.update(task_id, status="cancelled")
+        self.flush()
         self._notify_if_background(task, "cancelled")
         return task
 
     def cancel_all(self):
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
         with self._lock:
             ids = [
                 task_id
                 for task_id, task in self._tasks.items()
                 if task.get("status") in {"pending", "running"}
             ]
-        for task_id in ids:
-            self.cancel(task_id)
+            for task_id in ids:
+                future = self._futures.get(task_id)
+                if future is not None:
+                    future.cancel()
+                task = self._tasks.get(task_id)
+                if task is not None:
+                    task["status"] = "cancelled"
+                    task["updated"] = now
+            if ids:
+                # Одна запись на всю пачку, а не по одной на задачу.
+                self._save()
+                self.flush()
+            cancelled = [
+                dict(self._tasks[task_id])
+                for task_id in ids
+                if task_id in self._tasks
+            ]
+        for task in cancelled:
+            self._notify_if_background(task, "cancelled")
 
     def get(self, task_id):
         with self._lock:
