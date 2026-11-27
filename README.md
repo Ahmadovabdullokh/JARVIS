@@ -244,8 +244,10 @@ powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
 `install.ps1` создаёт `.venv`, ставит зависимости, копирует
-`config.example.json` в `config.json`, ставит Chromium для Playwright и
-запускает диагностику. Он также выставляет Medium integrity для
+`config.example.json` в `config.json` и запускает диагностику.
+Тяжёлый опциональный стек (Playwright + Chromium, ~300–400 МБ) по
+умолчанию не ставится: для браузерной автоматизации выполните
+`install.ps1 -WithPlaywright`. Он также выставляет Medium integrity для
 `.venv\Scripts\python.exe` и `.venv\Scripts\pythonw.exe` — без этого
 браузер и Store-приложения могут запускаться без видимого окна.
 Автозапуск:
@@ -503,8 +505,15 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 зависимости, Tesseract, ffmpeg, Playwright, права на `data/` и
 свободное место.
 `scripts\build.ps1` собирает `dist\JARVIS\JARVIS.exe` через PyInstaller
-(onedir, без распаковки во временную папку);
-`packaging\jarvis.iss` — заготовка установщика Inno Setup.
+(onedir, без распаковки во временную папку): чистит прошлый вывод,
+требует ≥5 ГБ свободного места, закрепляет версию PyInstaller 6.22.3
+и печатает итоговый размер `dist` (~430 МБ). В сборку попадают только
+`models/hand_landmarker.task` и `tools/cloudflared.exe`, исключены
+pandas/matplotlib/scipy; версия EXE берётся из `MyAppVersion` в
+`packaging\jarvis.iss` (единый источник для EXE и установщика).
+`build.ps1 -Installer` дополнительно собирает установщик, если
+установлен Inno Setup 6. Кэш WebView2 хранится в
+`%LOCALAPPDATA%\JARVIS\webview2`, а не в каталоге проекта.
 
 ## Если команда сообщает «Открыл», а окна не видно
 
@@ -550,6 +559,7 @@ JARVIS_SLACK_WEBHOOK
 .\.venv\Scripts\python.exe -m pytest tests --cov=app --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check app tests launcher.py launcher_web.py launcher_remote.py scripts
 .\.venv\Scripts\python.exe -m mypy app
+.\.venv\Scripts\python.exe scripts\perf_check.py --compare
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 pre-commit install
 ```
@@ -558,9 +568,13 @@ pre-commit install
 RAG, retry/fallback LLM, диагностику, память, конфиг, таймауты
 инструментов, голосовой пайплайн, запуск приложений и сайтов, фокус
 окон, удалённый доступ и Telegram AppX, плагины, локализацию, профили,
-FTS5-поиск, умный контекст, камеру и жесты (сейчас 300 тестов). CI гоняет
-Python 3.10/3.11/3.12/3.13, ruff, mypy, coverage (порог 50%) и
-`pip-audit`: `.github/workflows/tests.yml`.
+FTS5-поиск, умный контекст, камеру и жесты (сейчас 402 теста).
+`perf_check.py` меряет холодный импорт, шину событий, журнал задач,
+JPEG-энкод и место на диске; `--save` обновляет
+`data/perf_baseline.json`, `--compare` печатает дельту. CI гоняет
+Python 3.11/3.12/3.13, ruff, mypy, coverage (порог 50%, XML в
+артефактах) и `pip-audit`: `.github/workflows/tests.yml`; job
+`build` с бюджетом размера dist запускается вручную или на тег.
 Зависимости обновляет Dependabot (`.github/dependabot.yml`).
 
 Конфигурация и пути теперь централизованы: `app/config.py` (загрузка,
@@ -719,6 +733,13 @@ HUD, поток, жесты, качество и HUD-панель. Обрабо�
   - `performance` — 12 fps, JPEG 74, лёгкая резкость;
   - `balanced` — 20 fps, JPEG 82, резкость 0.35;
   - `quality` — 30 fps, JPEG 88, резкость 0.5 (по умолчанию).
+- На слабом железе (≤2 физических ядра или ≤8.5 ГБ RAM) JARVIS
+  автоматически включает low-профиль (`app/performance.py`): камера
+  12 fps / JPEG 78 / резкость 0.25, жесты на одну руку, 3 потока
+  инструментов, 40 схем на запрос, без лишнего раунда планирования,
+  лёгкий UI и polling 250 мс. Профиль не перезаписывает `config.json`.
+  Ручной выбор — `performance.tier` (`low`/`standard`/`high`) или
+  `JARVIS_TIER=...`; отключить автопрофиль — `performance.auto: false`.
 - Кнопка **«Проверить камеры»** перебирает индексы 0–3 и показывает
   реальное разрешение/FPS; почти чёрные виртуальные камеры помечаются.
 - Камера может быть **фоном всего приложения** (кнопка «ФОН») и

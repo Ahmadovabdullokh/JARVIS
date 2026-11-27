@@ -227,8 +227,24 @@ WinForms, из-за чего импорт модуля падал. Патч об
   режиме WAL. LLM ходит через keep-alive `requests.Session`
   (`app/llm_client._http_session`).
 
+## Профиль производительности
+
+- `app/performance.py` определяет tier (`low`/`standard`/`high`) по
+  числу физических ядер и RAM; `performance.tier` в config.json или
+  `JARVIS_TIER` задают вручную, `performance.auto: false` отключает
+  автопрофиль. Значения применяются как clamps при чтении настроек и
+  не перезаписывают config.json.
+- Low-профиль: камера 12 fps / JPEG 78 / sharpness 0.25 / 2 клиента,
+  одна рука для жестов, overlay 6 fps, 3 потока инструментов, 2 потока
+  задач, 40 схем на запрос, без category planning, polling 250 мс,
+  micro-meter 500 мс, лёгкий UI по умолчанию.
+
 ## Проверки
 
 - План развития: `docs/IMPROVEMENT_PLAN.md`.
 - Логи: `data/logs/jarvis.log`.
 - `python -m pytest tests/`.
+- `python scripts/perf_check.py --compare` — импорт, event bus,
+  журнал задач, JPEG, диск; baseline в `data/perf_baseline.json`
+  (gitignored), обновление — `--save`.
+- Версия EXE и установщика — `MyAppVersion` в `packaging/jarvis.iss`.
