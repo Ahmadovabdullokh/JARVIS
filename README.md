@@ -263,6 +263,12 @@ powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 Если ярлык с именем `JARVIS.lnk` блокируется антивирусом, скрипт
 создаёт `JARVIS App.lnk`; при необходимости добавьте исключение.
 
+Значок ярлыка копируется в `%LOCALAPPDATA%\JARVIS\jarvis.ico`: дерево
+проекта помечено High integrity (PyCharm/`install.ps1` запускаются от
+администратора), а Explorer извлекает значки ярлыков на Medium и не
+видит файл внутри такого дерева — без копии ярлык выглядит как пустой
+файл.
+
 Создайте `.env` в корне проекта:
 
 ```text

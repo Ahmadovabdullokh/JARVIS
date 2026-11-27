@@ -7,6 +7,17 @@ $Root = Split-Path -Parent $PSScriptRoot
 # from the Startup folder. Use scripts\start_all.ps1 manually for tunnel/APK.
 $Exe = Join-Path $Root "dist\JARVIS\JARVIS.exe"
 $VenvPythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+$IconSource = Join-Path $Root "packaging\jarvis.ico"
+# Explorer extracts shortcut icons at Medium integrity. The project tree is
+# labelled High (PyCharm/install.ps1 run elevated), so icons inside it fall
+# back to the blank "file" icon. Keep a copy outside the project.
+$IconDir = Join-Path $env:LOCALAPPDATA "JARVIS"
+$Icon = Join-Path $IconDir "jarvis.ico"
+if (Test-Path -LiteralPath $IconSource) {
+    New-Item -ItemType Directory -Path $IconDir -Force | Out-Null
+    Copy-Item -LiteralPath $IconSource -Destination $Icon -Force
+    icacls $Icon /setintegritylevel medium 2>$null | Out-Null
+}
 $Shell = New-Object -ComObject WScript.Shell
 
 function Set-JarvisShortcut($Directory, [string[]]$Names) {
@@ -26,7 +37,10 @@ function Set-JarvisShortcut($Directory, [string[]]$Names) {
             }
             $Shortcut.WorkingDirectory = $Root
             $Shortcut.Description = "JARVIS personal assistant"
-            if (Test-Path -LiteralPath $Exe) {
+            if (Test-Path -LiteralPath $Icon) {
+                $Shortcut.IconLocation = $Icon
+            }
+            elseif (Test-Path -LiteralPath $Exe) {
                 $Shortcut.IconLocation = $Exe
             }
             $Shortcut.Save()
