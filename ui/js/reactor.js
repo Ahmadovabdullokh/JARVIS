@@ -18,6 +18,11 @@
       this.mic = 0;
       this.time = 0;
       this.started = 0;
+      this.active = true;
+      this.reducedMotion = Boolean(
+        window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      );
       this.particles = Array.from({ length: 22 }, (_, index) => ({
         angle: (index / 22) * Math.PI * 2,
         radius: 74 + (index % 8) * 5,
@@ -60,6 +65,16 @@
       this.draw();
     }
 
+    setActive(value) {
+      const active = Boolean(value);
+      if (this.active === active) return;
+      this.active = active;
+      this.lastDraw = 0;
+      if (active) {
+        this.draw();
+      }
+    }
+
     start() {
       if (this.started) return;
       this.started = performance.now();
@@ -68,9 +83,9 @@
 
     frame(now) {
       this.time = (now - this.started) / 1000;
-      if (!document.hidden &&
-          (!this.lastDraw ||
-           now - this.lastDraw >= (this.lite ? 120 : 33))) {
+      const interval = this.reducedMotion ? 500 : (this.lite ? 125 : 33);
+      if (this.active && !document.hidden &&
+          (!this.lastDraw || now - this.lastDraw >= interval)) {
         this.lastDraw = now;
         this.draw();
       }

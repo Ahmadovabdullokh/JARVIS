@@ -13,15 +13,19 @@
 редиректит на чистый ``/``.
 """
 
+import gzip
+import hashlib
 import ipaddress
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import subprocess
 import threading
 import time
+from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -69,6 +73,69 @@ UI_DIR = resource_path("ui")
 MAX_BODY = 1024 * 1024
 MAX_AUDIO_BODY = 15 * 1024 * 1024
 MAX_FRAME_BODY = 2 * 1024 * 1024
+
+# Статика: ?v=<hash> привязывает URL к содержимому файла, поэтому
+# браузер/телефон может держать его в кэше целый год без revalidate.
+_STATIC_VERSION_CACHE = {}
+_STATIC_VERSION_LOCK = threading.Lock()
+_INDEX_ASSET_RE = re.compile(
+    r'(?P<prefix>(?:href|src)=")(?P<url>(?:css|js)/[^"?#]+)(?:\?v=[^"#]*)?"'
+)
+_COMPRESSIBLE_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/manifest+json",
+    "application/xml",
+    "font/ttf",
+    "application/x-font-ttf",
+    "image/svg+xml",
+}
+
+
+def _compressible(ctype):
+    base = (ctype or "").split(";")[0].strip().lower()
+    return base.startswith("text/") or base in _COMPRESSIBLE_TYPES
+
+
+def _static_version(path):
+    """Версия ассета из mtime+size — файл читать не нужно."""
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    key = str(path)
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _STATIC_VERSION_LOCK:
+        cached = _STATIC_VERSION_CACHE.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    version = hashlib.sha1(
+        f"{stat.st_mtime_ns}-{stat.st_size}".encode("ascii")
+    ).hexdigest()[:10]
+    with _STATIC_VERSION_LOCK:
+        _STATIC_VERSION_CACHE[key] = (stamp, version)
+    return version
+
+
+def _version_index(html):
+    """Подставляет ?v=<hash> в css/js ссылки index.html."""
+
+    root = UI_DIR.resolve()
+
+    def replace(match):
+        url = match.group("url")
+        try:
+            target = (UI_DIR / url).resolve()
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return match.group(0)
+        version = _static_version(target)
+        if not version:
+            return match.group(0)
+        return f"{match.group('prefix')}{url}?v={version}\""
+
+    return _INDEX_ASSET_RE.sub(replace, html)
 
 # Методы RPC, безопасные для read-only клиента (без send_message и т.п.).
 READ_ONLY_METHODS = {
@@ -448,8 +515,9 @@ def make_handler(bridge, token, allowed_methods=None):
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
 
-        def _send_file(self, path):
+        def _send_file(self, path, query=None):
             try:
+                stat = path.stat()
                 body = path.read_bytes()
             except OSError:
                 self._send_json({"ok": False, "error": "not found"}, 404)
@@ -460,10 +528,58 @@ def make_handler(bridge, token, allowed_methods=None):
                 "application/json",
             }:
                 ctype += "; charset=utf-8"
+            is_index = path.name == "index.html"
+            if is_index:
+                # Версии ассетов считаются на лету: править index.html
+                # вручную при каждом изменении css/js больше не нужно.
+                try:
+                    body = _version_index(
+                        body.decode("utf-8")
+                    ).encode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                etag = '"' + hashlib.sha1(body).hexdigest()[:20] + '"'
+            else:
+                etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+            versioned = bool((query or {}).get("v"))
+            if versioned:
+                cache_control = "public, max-age=31536000, immutable"
+            elif is_index:
+                cache_control = "no-store"
+            else:
+                # Файл мог измениться после пересборки — только с проверкой.
+                cache_control = "no-cache"
+            if etag in (self.headers.get("If-None-Match") or ""):
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Last-Modified", formatdate(
+                    stat.st_mtime, usegmt=True
+                ))
+                self.send_header("Cache-Control", cache_control)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            encoding = ""
+            if (
+                _compressible(ctype)
+                and len(body) >= 1024
+                and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+            ):
+                compressed = gzip.compress(body, compresslevel=6)
+                if len(compressed) < len(body) - 64:
+                    body = compressed
+                    encoding = "gzip"
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("ETag", etag)
+            self.send_header("Last-Modified", formatdate(
+                stat.st_mtime, usegmt=True
+            ))
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Vary", "Accept-Encoding")
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
@@ -662,7 +778,7 @@ def make_handler(bridge, token, allowed_methods=None):
             if path is None:
                 self._send_json({"ok": False, "error": "not found"}, 404)
                 return
-            self._send_file(path)
+            self._send_file(path, query)
 
         def _read_body(self, limit):
             try:

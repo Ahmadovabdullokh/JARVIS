@@ -75,7 +75,17 @@ class TaskManager:
                 ),
                 encoding="utf-8",
             )
-            temp.replace(self.path)
+            # На Windows антивирус/индексатор иногда держит только что
+            # созданный файл: повторяем replace пару раз вместо потери
+            # последних шагов журнала.
+            for attempt in range(3):
+                try:
+                    temp.replace(self.path)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.02)
         except OSError as error:
             print(f"[TASK SAVE ERROR] {error}")
             return False
@@ -294,6 +304,31 @@ class TaskManager:
         )
         return items[: max(1, int(limit or 50))]
 
+    def summary(self, limit=50):
+        """Компактный список для UI: без шагов и метаданных.
+
+        Полный список с шагами весил ~115 КБ на 50 задач и уходил
+        в UI каждые 1.5 с; для карточек хватает этих полей.
+        """
+
+        items = self.list(limit=limit)
+        result = []
+        for item in items:
+            result.append(
+                {
+                    "id": item.get("id", ""),
+                    "title": item.get("title", ""),
+                    "kind": item.get("kind", "task"),
+                    "status": item.get("status", ""),
+                    "created": item.get("created", ""),
+                    "updated": item.get("updated", ""),
+                    "step_count": len(item.get("steps") or []),
+                    "result": str(item.get("result") or "")[:160],
+                    "error": str(item.get("error") or "")[:160],
+                }
+            )
+        return result
+
     def run_background(self, title, func, *args, **kwargs):
         task_id = self.create(title, kind="background")
         self.start(task_id)
@@ -312,7 +347,9 @@ class TaskManager:
         self._futures[task_id] = future
         return task_id
 
-    def summary(self, limit=20):
+    def describe(self, limit=20):
+        """Текстовый список задач для инструмента list_tasks."""
+
         items = self.list(limit=limit)
         if not items:
             return "Задач нет."

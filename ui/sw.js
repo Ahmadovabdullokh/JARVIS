@@ -1,27 +1,30 @@
 /* JARVIS service worker: app-shell cache для PWA-режима.
- * Кэшируются только статические ассеты GET same-origin.
- * RPC (/rpc), /stt и любые POST не кэшируются и не перехватываются.
+ * HTML — network-first; ассеты с ?v=<hash> неизменяемы — cache-first;
+ * прочая статика — stale-while-revalidate. RPC (/rpc), /stt и любые
+ * POST не кэшируются и не перехватываются.
  */
 
-var CACHE = "jarvis-shell-v6";
+var CACHE = "jarvis-shell-v7";
 var SHELL = [
   "./",
   "./index.html",
-  "./css/fonts.css",
-  "./css/tokens.css",
-  "./assets/fonts/Orbitron-Variable.ttf",
-  "./assets/fonts/Exo2-Variable.ttf",
-  "./assets/fonts/JetBrainsMono-Variable.ttf",
-  "./css/base.css",
-  "./css/layout.css",
-  "./css/components.css",
-  "./css/pages.css",
-  "./js/api.js",
-  "./js/utils.js",
-  "./js/reactor.js",
-  "./js/app.js",
   "./manifest.webmanifest"
 ];
+
+function remember(request, response) {
+  if (!response || !response.ok) return;
+  var clone = response.clone();
+  caches.open(CACHE).then(function (cache) {
+    cache.put(request, clone);
+  });
+}
+
+function offline() {
+  return new Response("JARVIS недоступен без сети.", {
+    status: 503,
+    headers: { "Content-Type": "text/plain; charset=utf-8" }
+  });
+}
 
 self.addEventListener("install", function (event) {
   event.waitUntil(
@@ -62,22 +65,50 @@ self.addEventListener("fetch", function (event) {
       url.pathname === "/camera/frame") {
     return;
   }
-  /* Статика: network-first, при офлайне — из кэша */
-  event.respondWith(
-    fetch(request)
-      .then(function (response) {
-        if (response && response.ok) {
-          var clone = response.clone();
-          caches.open(CACHE).then(function (cache) {
-            cache.put(request, clone);
+
+  if (request.mode === "navigate") {
+    /* HTML: свежий index с новыми хэшами, кэш — только офлайн. */
+    event.respondWith(
+      fetch(request)
+        .then(function (response) {
+          remember(request, response);
+          return response;
+        })
+        .catch(function () {
+          return caches.match(request).then(function (cached) {
+            return cached || caches.match("./index.html") || offline();
           });
-        }
-        return response;
+        })
+    );
+    return;
+  }
+
+  if (url.searchParams.has("v")) {
+    /* Версионированный ассет неизменяем — сразу из кэша. */
+    event.respondWith(
+      caches.match(request).then(function (cached) {
+        if (cached) return cached;
+        return fetch(request).then(function (response) {
+          remember(request, response);
+          return response;
+        }).catch(offline);
       })
-      .catch(function () {
-        return caches.match(request).then(function (cached) {
-          return cached || caches.match("./index.html");
+    );
+    return;
+  }
+
+  /* Остальная статика: отдать кэш и обновить его на фоне. */
+  event.respondWith(
+    caches.match(request).then(function (cached) {
+      var network = fetch(request)
+        .then(function (response) {
+          remember(request, response);
+          return response;
+        })
+        .catch(function () {
+          return cached || offline();
         });
-      })
+      return cached || network;
+    })
   );
 });

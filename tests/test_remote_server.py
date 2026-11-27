@@ -221,6 +221,58 @@ class RemoteHttpTests(unittest.TestCase):
         self.assertIn("text/html", headers.get("Content-Type", ""))
         self.assertIn(b"JARVIS", body)
 
+    def test_index_assets_are_versioned(self):
+        cookie = self._login()
+        status, headers, body = self._request(
+            "GET", "/", headers={"Cookie": cookie}
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("no-store", headers.get("Cache-Control", ""))
+        text = body.decode("utf-8")
+        self.assertRegex(text, r"css/base\.css\?v=[0-9a-f]{10}")
+        self.assertNotIn("?v=20261125b", text)
+
+    def test_static_etag_and_gzip(self):
+        import gzip
+
+        cookie = self._login()
+        status, headers, body = self._request(
+            "GET",
+            "/css/base.css",
+            headers={
+                "Cookie": cookie,
+                "Accept-Encoding": "gzip",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
+        self.assertIn("no-cache", headers.get("Cache-Control", ""))
+        etag = headers.get("ETag")
+        self.assertTrue(etag)
+        self.assertIn(b"perf-lite", gzip.decompress(body))
+        status, _, body = self._request(
+            "GET",
+            "/css/base.css",
+            headers={"Cookie": cookie, "If-None-Match": etag},
+        )
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b"")
+
+    def test_versioned_asset_is_immutable(self):
+        cookie = self._login()
+        version = remote_server._static_version(
+            remote_server.UI_DIR / "css" / "base.css"
+        )
+        self.assertTrue(version)
+        status, headers, _ = self._request(
+            "GET",
+            f"/css/base.css?v={version}",
+            headers={"Cookie": cookie},
+        )
+        self.assertEqual(status, 200)
+        cache_control = headers.get("Cache-Control", "")
+        self.assertIn("immutable", cache_control)
+
     def test_rpc_read_only_blocks_send_message(self):
         cookie = self._login()
         status, _, _ = self._request(

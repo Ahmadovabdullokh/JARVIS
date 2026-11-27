@@ -197,7 +197,7 @@ def get_task_snapshot():
     if _ACTIVE_AGENT is None:
         return []
     try:
-        return _ACTIVE_AGENT.tasks.list(limit=50)
+        return _ACTIVE_AGENT.tasks.summary(limit=50)
     except Exception:
         return []
 

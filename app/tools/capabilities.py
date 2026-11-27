@@ -130,7 +130,7 @@ def register(registry):
         tasks = context.tasks
         if tasks is None:
             return "Менеджер задач недоступен."
-        return tasks.summary(limit=limit or 30)
+        return tasks.describe(limit=limit or 30)
 
     @registry.tool(
         "task_status",

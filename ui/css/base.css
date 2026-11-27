@@ -396,6 +396,17 @@ body.perf-lite .embers {
   display: none;
 }
 
+body.perf-lite .empty-orbit::before,
+body.perf-lite .camera-scan-ring,
+body.perf-lite #mic-button.recording,
+body.perf-lite body.camera-live .camera-rec {
+  animation: none;
+}
+
+body.perf-lite * {
+  backdrop-filter: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   body::before,
   .embers span,

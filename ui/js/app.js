@@ -52,6 +52,12 @@
     "settings",
   ];
 
+  // История в памяти держит 350 сообщений, в DOM — последние 120:
+  // перерисовка сотен узлов на слабом ноутбуке заметна на глаз.
+  const MESSAGE_LIMIT = 350;
+  const MESSAGE_DOM_LIMIT = 120;
+  const STREAM_MARKDOWN_INTERVAL = 250;
+
   const state = {
     page: "chat",
     status: {
@@ -90,6 +96,13 @@
     toolCount: 0,
     lastAnswer: "",
     streamIndex: null,
+    streamRow: null,
+    streamBody: null,
+    streamText: "",
+    streamRaf: null,
+    streamMarkdownAt: 0,
+    messageStart: 0,
+    showAllMessages: false,
     code: null,
     camera: null,
     gesture: null,
@@ -306,10 +319,24 @@
       setConnected(false);
     } finally {
       if (state.polling) {
-        var remoteDelay = /^https?:$/.test(window.location.protocol) ? 500 : 80;
-        setTimeout(poll, remoteDelay);
+        setTimeout(poll, pollDelay());
       }
     }
+  }
+
+  function pollDelay() {
+    if (typeof document !== "undefined" && document.hidden) {
+      return 1000;
+    }
+    if (/^https?:$/.test(window.location.protocol)) {
+      return 500;
+    }
+    const perf = state.performance || {};
+    const serverDelay = Number(perf.poll_ms);
+    if (serverDelay > 0) {
+      return Math.max(120, serverDelay);
+    }
+    return 150;
   }
 
   function applyBootstrap(data) {
@@ -398,18 +425,34 @@
       case "user":
         appendMessage("user", textOf(payload));
         break;
-      case "assistant":
-        if (state.streamIndex != null &&
-            state.messages[state.streamIndex]) {
-          state.messages[state.streamIndex].text = textOf(payload);
-          state.messages[state.streamIndex].time = Date.now();
+      case "assistant": {
+        const message = state.streamIndex != null
+          ? state.messages[state.streamIndex]
+          : null;
+        if (message) {
+          message.text = textOf(payload);
+          message.time = Date.now();
+          message.streaming = false;
           state.streamIndex = null;
-          state.forceScroll = true;
-          renderMessages();
+          state.streamText = message.text;
+          if (state.streamBody) {
+            state.forceScroll = state.forceScroll ||
+              isNearBottom(els.messageList);
+            scheduleStreamRender(true);
+            const stamp = state.streamRow &&
+              state.streamRow.querySelector(".message-meta span");
+            if (stamp) {
+              stamp.textContent = formatClock(message.time);
+            }
+          } else {
+            state.forceScroll = true;
+            renderMessages();
+          }
         } else {
           appendMessage("assistant", textOf(payload));
         }
         break;
+      }
       case "assistant_partial":
         updateStreamMessage(textOf(payload));
         break;
@@ -510,25 +553,126 @@
 
   function updateStreamMessage(text) {
     if (!text) return;
-    if (state.streamIndex == null ||
-        !state.messages[state.streamIndex] ||
-        state.messages[state.streamIndex].role !== "assistant") {
-      state.messages.push({
+    const nearBottom = isNearBottom(els.messageList);
+    let message = state.streamIndex != null
+      ? state.messages[state.streamIndex]
+      : null;
+    if (!message || message.role !== "assistant") {
+      message = {
         role: "assistant",
         text: text,
         time: Date.now(),
         streaming: true,
-      });
+      };
+      state.messages.push(message);
       state.streamIndex = state.messages.length - 1;
-      if (state.messages.length > 350) {
-        state.messages.splice(0, state.messages.length - 350);
-        state.streamIndex = state.messages.length - 1;
+      state.streamMarkdownAt = 0;
+      if (trimMessageHistory()) {
+        // Ветка «показать старые» больше не помещается — полный рендер.
+        renderMessages();
+      } else {
+        const node = appendMessageNode(message);
+        state.streamRow = node.row;
+        state.streamBody = node.body;
       }
+    } else if (message.text === text) {
+      return;
     } else {
-      state.messages[state.streamIndex].text = text;
+      message.text = text;
     }
-    state.forceScroll = true;
-    renderMessages();
+    state.streamText = text;
+    state.forceScroll = state.forceScroll || nearBottom;
+    scheduleStreamRender(false);
+  }
+
+  function scheduleStreamRender(final) {
+    if (!state.streamBody) return;
+    if (final) {
+      if (state.streamRaf != null) {
+        cancelAnimationFrame(state.streamRaf);
+        state.streamRaf = null;
+      }
+      flushStreamRender(true);
+      return;
+    }
+    if (state.streamRaf != null) return;
+    state.streamRaf = requestAnimationFrame(function () {
+      state.streamRaf = null;
+      flushStreamRender(false);
+    });
+  }
+
+  function flushStreamRender(final) {
+    const body = state.streamBody;
+    if (!body) return;
+    const text = state.streamText || "";
+    const now = window.performance.now();
+    const painted = final ||
+      now - state.streamMarkdownAt >= STREAM_MARKDOWN_INTERVAL;
+    if (painted) {
+      // Markdown и подсветка дешёвы не для каждой дельты, а раз в 250 мс.
+      state.streamMarkdownAt = now;
+      body.innerHTML = renderMarkdown(text);
+      enhanceCodeBlocks(body);
+    } else {
+      body.textContent = text;
+    }
+    if (state.forceScroll) {
+      els.messageList.scrollTop = els.messageList.scrollHeight;
+      state.forceScroll = false;
+    }
+  }
+
+  function trimMessageHistory() {
+    if (state.messages.length <= MESSAGE_LIMIT) return false;
+    const drop = state.messages.length - MESSAGE_LIMIT;
+    state.messages.splice(0, drop);
+    if (state.streamIndex != null) {
+      state.streamIndex = Math.max(0, state.streamIndex - drop);
+    }
+    state.messageStart = Math.max(0, state.messageStart - drop);
+    if (state.showAllMessages) {
+      // Сообщения выпали из истории — возвращаемся к компактному DOM.
+      state.showAllMessages = false;
+      return true;
+    }
+    return false;
+  }
+
+  function appendMessageNode(message) {
+    const node = buildMessageNode(message);
+    if (!state.showAllMessages &&
+        state.messages.length - state.messageStart > MESSAGE_DOM_LIMIT) {
+      const first = els.messageList.querySelector(".message");
+      if (first) {
+        first.remove();
+        state.messageStart += 1;
+      }
+    }
+    els.messageList.appendChild(node.row);
+    ensureOlderButton();
+    els.chatEmpty.classList.add("hidden");
+    return node;
+  }
+
+  function ensureOlderButton() {
+    let button = els.messageList.querySelector(".message-older");
+    const hidden = state.messageStart;
+    if (hidden <= 0) {
+      if (button) button.remove();
+      return;
+    }
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-older";
+      button.addEventListener("click", function () {
+        state.showAllMessages = true;
+        renderMessages();
+      });
+      els.messageList.insertBefore(button, els.messageList.firstChild);
+    }
+    button.textContent = "ПОКАЗАТЬ СТАРЫЕ · " + hidden;
   }
 
   function enhanceCodeBlocks(container) {
@@ -740,51 +884,73 @@
     });
   }
 
+  function buildMessageNode(message) {
+    const row = document.createElement("div");
+    row.className = "message " + message.role;
+    const meta = document.createElement("div");
+    meta.className = "message-meta";
+    const role = {
+      user: "ВЫ",
+      assistant: "JARVIS",
+      error: "ОШИБКА",
+      system: "СИСТЕМА",
+    }[message.role] || "JARVIS";
+    meta.innerHTML =
+      "<b>" +
+      escapeHtml(role) +
+      "</b><span>" +
+      escapeHtml(formatClock(message.time)) +
+      "</span>";
+    const body = document.createElement("div");
+    body.className = "message-body";
+    if (message.role === "assistant") {
+      body.innerHTML = renderMarkdown(message.text);
+      enhanceCodeBlocks(body);
+    } else {
+      body.innerHTML = escapeHtml(message.text).replace(/\n/g, "<br>");
+    }
+    row.appendChild(meta);
+    row.appendChild(body);
+    return { row: row, body: body };
+  }
+
   function appendMessage(role, value) {
     const text = String(value == null ? "" : value).trim();
     if (!text) return;
-    state.messages.push({ role: role, text: text, time: Date.now() });
-    if (state.messages.length > 350) {
-      state.messages.splice(0, state.messages.length - 350);
+    const message = { role: role, text: text, time: Date.now() };
+    state.messages.push(message);
+    const nearBottom = state.forceScroll || isNearBottom(els.messageList);
+    if (trimMessageHistory()) {
+      renderMessages();
+      return;
     }
-    state.forceScroll = state.forceScroll || isNearBottom(els.messageList);
-    renderMessages();
+    appendMessageNode(message);
+    if (nearBottom) {
+      els.messageList.scrollTop = els.messageList.scrollHeight;
+    }
+    state.forceScroll = false;
   }
 
   function renderMessages() {
     const nearBottom = isNearBottom(els.messageList);
+    const total = state.messages.length;
+    const span = state.showAllMessages ? total : MESSAGE_DOM_LIMIT;
+    state.messageStart = Math.max(0, total - span);
+    state.streamRow = null;
+    state.streamBody = null;
     const fragment = document.createDocumentFragment();
-    state.messages.forEach(function (message) {
-      const row = document.createElement("div");
-      row.className = "message " + message.role;
-      const meta = document.createElement("div");
-      meta.className = "message-meta";
-      const role = {
-        user: "ВЫ",
-        assistant: "JARVIS",
-        error: "ОШИБКА",
-        system: "СИСТЕМА",
-      }[message.role] || "JARVIS";
-      meta.innerHTML =
-        "<b>" +
-        escapeHtml(role) +
-        "</b><span>" +
-        escapeHtml(formatClock(message.time)) +
-        "</span>";
-      const body = document.createElement("div");
-      body.className = "message-body";
-      if (message.role === "assistant") {
-        body.innerHTML = renderMarkdown(message.text);
-        enhanceCodeBlocks(body);
-      } else {
-        body.innerHTML = escapeHtml(message.text).replace(/\n/g, "<br>");
+    for (let index = state.messageStart; index < total; index += 1) {
+      const message = state.messages[index];
+      const node = buildMessageNode(message);
+      if (message.streaming) {
+        state.streamRow = node.row;
+        state.streamBody = node.body;
       }
-      row.appendChild(meta);
-      row.appendChild(body);
-      fragment.appendChild(row);
-    });
+      fragment.appendChild(node.row);
+    }
     els.messageList.innerHTML = "";
     els.messageList.appendChild(fragment);
+    ensureOlderButton();
     els.chatEmpty.classList.toggle(
       "hidden",
       state.messages.length > 0
@@ -2160,6 +2326,9 @@
     }
     applyCameraChrome();
     syncCameraStream();
+    if (reactor.setActive) {
+      reactor.setActive(page === "chat");
+    }
   }
 
   function insertPrompt(prompt) {
@@ -2388,6 +2557,12 @@
     els.stopButton.addEventListener("click", stopAssistant);
     els.clearChat.addEventListener("click", function () {
       state.messages = [];
+      state.streamIndex = null;
+      state.streamRow = null;
+      state.streamBody = null;
+      state.streamText = "";
+      state.messageStart = 0;
+      state.showAllMessages = false;
       renderMessages();
       toast("История чата очищена.", "success");
     });

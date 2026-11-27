@@ -76,7 +76,7 @@ def measure_event_bus():
 
 
 def measure_tasks():
-    """Время записи журнала: 50 шагов пачкой + принудительный flush."""
+    """Время записи журнала и размер снимка для UI."""
 
     from app.tasks import TaskManager
 
@@ -91,14 +91,60 @@ def measure_tasks():
         start = time.perf_counter()
         manager.flush()
         flush = time.perf_counter() - start
-        size = path.stat().st_size
+        journal_kb = path.stat().st_size / 1024
+        # 50 задач по 5 шагов — типичный накопленный журнал.
+        for index in range(50):
+            extra_id = manager.create(f"Задача {index}")
+            for step in range(5):
+                manager.add_step(extra_id, f"Шаг {step}")
+        manager.flush()
+        snapshot_kb = len(
+            json.dumps(
+                manager.summary(limit=50),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ) / 1024
         manager.shutdown()
 
     return {
         "add_50_steps_ms": round(batched * 1e3, 2),
         "flush_ms": round(flush * 1e3, 2),
-        "journal_kb": round(size / 1024, 1),
+        "journal_kb": round(journal_kb, 1),
+        "snapshot_kb": round(snapshot_kb, 1),
     }
+
+
+def measure_jpeg():
+    """Кодирование кадра 640x480 — цена камеры на каждом кадре."""
+
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return {"encode_q74_ms": None, "encode_q88_ms": None}
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:, :, 1] = np.tile(
+        np.arange(640, dtype=np.uint8),
+        (480, 1),
+    )
+    result = {}
+    for quality in (74, 88):
+        samples = []
+        for _ in range(20):
+            start = time.perf_counter()
+            ok, buffer = cv2.imencode(
+                ".jpg",
+                frame,
+                [cv2.IMWRITE_JPEG_QUALITY, quality],
+            )
+            samples.append(time.perf_counter() - start)
+        result[f"encode_q{quality}_ms"] = round(
+            statistics.median(samples) * 1e3, 2
+        )
+        if ok:
+            result[f"size_q{quality}_kb"] = round(len(buffer) / 1024, 1)
+    return result
 
 
 def directory_size(path):
@@ -129,6 +175,7 @@ def collect():
         "import_ui_bridge_s": measure_import(),
         "event_bus": measure_event_bus(),
         "tasks": measure_tasks(),
+        "jpeg": measure_jpeg(),
         "disk": measure_disk(),
     }
 

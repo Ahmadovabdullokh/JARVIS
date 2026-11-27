@@ -106,3 +106,23 @@ def test_flush_is_noop_when_nothing_changed(manager):
     manager.flush()
 
     assert writes == []
+
+
+def test_snapshot_is_compact(manager):
+    task_id = manager.create("Снимок")
+    manager.add_step(task_id, "Шаг", detail="x" * 1000)
+    manager.update(task_id, result="y" * 500)
+
+    snapshot = manager.summary(limit=10)
+
+    assert isinstance(snapshot, list)
+    item = next(row for row in snapshot if row["id"] == task_id)
+    assert "steps" not in item
+    assert item["step_count"] == 1
+    assert len(item["result"]) == 160
+
+
+def test_describe_returns_text(manager):
+    manager.create("Текстовая задача")
+
+    assert "Текстовая задача" in manager.describe(limit=10)
