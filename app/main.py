@@ -27,7 +27,7 @@ from app.logging import get_logger
 from app.memory import Memory
 from app.observability import tracer
 from app.paths import BASE_DIR, ensure_runtime_dirs
-from app.pc_agent import PCAgent
+from app.pc_agent import PCAgent, is_camera_question
 from app.projects import (
     format_project_error,
     resolve_project_reference,
@@ -847,6 +847,32 @@ def process_command(
                 f"[COMMAND ERROR] "
                 f"{type(error).__name__}: {error}"
             )
+
+    # --------------------------------------------------------
+    # 1b. Вопрос о кадре камеры — всегда смотрим свежий кадр.
+    # Иначе модель в code-режиме не видит look_at_camera и повторяет
+    # прошлое описание из истории.
+    # --------------------------------------------------------
+
+    if is_camera_question(text):
+        camera_answer = ""
+        try:
+            camera_answer = str(
+                pc_agent.look_at_camera(text) or ""
+            ).strip()
+        except Exception as error:
+            log.info(
+                f"[VISION ERROR] {type(error).__name__}: {error}"
+            )
+        if camera_answer and not camera_answer.startswith(
+            "Не удалось проанализировать"
+        ):
+            log.info(f"[VISION] {camera_answer[:200]}")
+            finish_trace(camera_answer, "vision")
+            respond(
+                persona.address_result(camera_answer, persona_config)
+            )
+            return True
 
     # --------------------------------------------------------
     # 2. Прямые команды управления компьютером (кроме беседы без инструментов)

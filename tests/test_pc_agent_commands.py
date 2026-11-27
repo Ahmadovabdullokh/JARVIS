@@ -171,6 +171,45 @@ class DirectApplicationCommandTests(unittest.TestCase):
     @patch("app.main.publish_ui_event")
     @patch("app.main.handle_command", return_value=None)
     @patch("app.main.tracer")
+    def test_camera_question_looks_at_a_fresh_frame(
+        self,
+        tracer,
+        _handle_command,
+        publish_ui_event,
+    ):
+        trace = tracer.return_value.start.return_value
+        pc_agent = Mock()
+        pc_agent.look_at_camera.return_value = (
+            "На кадре красная кружка."
+        )
+        llm = Mock()
+
+        process_command(
+            text="что я держу в руках",
+            tts=None,
+            pc_agent=pc_agent,
+            llm=llm,
+            persona_config={"address": "сэр"},
+            speak_output=False,
+            mode="code",
+        )
+
+        pc_agent.look_at_camera.assert_called_once_with(
+            "что я держу в руках"
+        )
+        llm.ask_with_tools.assert_not_called()
+        trace.finish.assert_called_once_with(
+            "На кадре красная кружка.",
+            status="vision",
+        )
+        publish_ui_event.assert_any_call(
+            "assistant",
+            "Сэр, на кадре красная кружка.",
+        )
+
+    @patch("app.main.publish_ui_event")
+    @patch("app.main.handle_command", return_value=None)
+    @patch("app.main.tracer")
     def test_chat_mode_keeps_computer_commands_disabled(
         self,
         _tracer,

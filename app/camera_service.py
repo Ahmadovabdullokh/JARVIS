@@ -795,13 +795,18 @@ class CameraService:
             fps = max(fps, analyze_fps)
         return max(1.0, fps)
 
-    def submit_external_jpeg(self, jpeg, rotate=0, device=""):
+    def submit_external_jpeg(
+        self, jpeg, rotate=0, device="", mirror=None
+    ):
         """Принимает кадр от телефона/браузера и отдаёт его жестам.
 
         Возвращает пустую строку при успехе или код ошибки:
         ``bad jpeg``, ``camera is off``, ``not phone source``.
         ``rotate`` — угол по часовой стрелке, который нужно применить,
-        чтобы кадр стал вертикальным.
+        чтобы кадр стал вертикальным. ``mirror`` — явное указание
+        клиента (None — брать настройку камеры): современное
+        приложение уже зеркалит кадр само и присылает ``mirror=0``,
+        поэтому ПК не должен повторять эту работу.
         """
 
         if not jpeg:
@@ -831,7 +836,11 @@ class CameraService:
                 return ""
             self._last_ingest_at = now
 
-        mirrored = bool(self._settings.get("mirror"))
+        mirrored = (
+            bool(self._settings.get("mirror"))
+            if mirror is None
+            else bool(mirror)
+        )
         needs_transform = bool(angle) or mirrored
         notify_due = self._ingest_notify_due(now)
 

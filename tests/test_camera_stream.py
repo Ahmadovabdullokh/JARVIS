@@ -40,8 +40,10 @@ class FakeCamera:
     def release_client(self):
         self.clients = max(0, self.clients - 1)
 
-    def submit_external_jpeg(self, jpeg, rotate=0, device=""):
-        self.frames.append((jpeg, str(rotate), device))
+    def submit_external_jpeg(
+        self, jpeg, rotate=0, device="", mirror=None
+    ):
+        self.frames.append((jpeg, str(rotate), device, mirror))
         return self.frame_error
 
 
@@ -170,7 +172,28 @@ class CameraFrameEndpointTests(unittest.TestCase):
             self.assertTrue(json.loads(payload)["ok"])
             self.assertEqual(
                 self.camera.frames,
-                [(b"jpeg-bytes", "90", "Pixel 7")],
+                [(b"jpeg-bytes", "90", "Pixel 7", None)],
+            )
+        finally:
+            conn.close()
+
+    def test_phone_mirror_flag_is_forwarded(self):
+        conn = HTTPConnection(
+            "127.0.0.1", self.server.port, timeout=5
+        )
+        try:
+            conn.request(
+                "POST",
+                "/camera/frame?rotate=0&mirror=0",
+                body=b"jpeg-bytes",
+                headers=self._auth_headers(),
+            )
+            response = conn.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(
+                self.camera.frames,
+                [(b"jpeg-bytes", "0", "Pixel 7", False)],
             )
         finally:
             conn.close()

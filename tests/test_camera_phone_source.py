@@ -167,6 +167,28 @@ class PhoneCameraSourceTests(unittest.TestCase):
         self.assertLess(red, 80)
         self.assertNotEqual(self.service.latest_jpeg(), jpeg)
 
+    def test_phone_mirror_flag_skips_pc_transform(self):
+        self.start_phone(mirror=True)
+        jpeg = make_jpeg()
+
+        self.assertEqual(
+            self.service.submit_external_jpeg(jpeg, mirror=False), ""
+        )
+
+        self.assertIsNone(self.service.latest_frame())
+        self.assertEqual(self.service.latest_jpeg(), jpeg)
+
+    def test_phone_mirror_flag_forces_transform(self):
+        self.start_phone(mirror=False)
+        jpeg = make_jpeg(40, 20, color=(30, 120, 200))
+
+        self.assertEqual(
+            self.service.submit_external_jpeg(jpeg, mirror=True), ""
+        )
+
+        self.assertIsNotNone(self.service.latest_frame())
+        self.assertNotEqual(self.service.latest_jpeg(), jpeg)
+
     def test_listener_forces_frame_decode(self):
         frames = []
         self.start_phone(mirror=False)

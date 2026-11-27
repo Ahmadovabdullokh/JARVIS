@@ -867,7 +867,10 @@ def make_handler(bridge, token, allowed_methods=None):
                     mirror = mirror_value == "1"
                 camera = get_camera_service()
                 error = camera.submit_external_jpeg(
-                    body, rotate=rotate, device=device
+                    body,
+                    rotate=rotate,
+                    device=device,
+                    mirror=mirror,
                 )
                 # Первый кадр с телефона сам включает источник «phone»:
                 # не нужно вручную переключать камеру в HUD.
@@ -877,7 +880,10 @@ def make_handler(bridge, token, allowed_methods=None):
                     and _switch_to_phone(bridge, mirror)
                 ):
                     error = camera.submit_external_jpeg(
-                        body, rotate=rotate, device=device
+                        body,
+                        rotate=rotate,
+                        device=device,
+                        mirror=mirror,
                     )
                 if error == "bad jpeg":
                     self._send_json({"ok": False, "error": error}, 400)

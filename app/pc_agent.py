@@ -257,6 +257,53 @@ def _compiled_hints():
     return _HINT_COMPILED
 
 
+_CAMERA_QUESTION_PATTERNS = (
+    r"\bчто\s+(?:ты\s+)?(?:сейчас\s+)?видишь\b",
+    r"\bчто\s+видно\b",
+    r"\bвидишь\s+(?:меня|это|что|кто|ли)\b",
+    r"\bчто\s+(?:я|ты)\s+(?:держу|держишь|показываю|показываешь)\b",
+    r"\bчто\s+(?:у\s+меня\s+)?(?:в|на)\s+рук(?:ах|е)\b",
+    r"\bчто\s+(?:у\s+меня\s+)?"
+    r"(?:на\s+столе|на\s+фоне|в\s+комнате|перед\s+тобой)\b",
+    r"\bчто(?:\s+это)?\s+за\s+(?:предмет|вещь|объект)\b",
+    r"\bпосмотри\b.*\b(?:камер|меня|в\s+рук|предмет)",
+    r"\b(?:опиши|описать|рассмотри)\b.*"
+    r"\b(?:кадр|камер|меня|комнат|что\s+видно)",
+    r"\b(?:что|кто)\s+(?:это|там)\b.*\b(?:камер|кадр)",
+    r"\b(?:камер[аеуы]|в\s+кадре|на\s+камере)\b.*"
+    r"\b(?:что|кто|видно|опиши|покажи)",
+    r"\b(?:на\s+камере|в\s+кадре|в\s+камере)\b",
+    r"\bузна(?:е|ё)шь\s+(?:меня|это|предмет)\b",
+)
+
+_CAMERA_QUESTION_RE = re.compile(
+    "|".join(_CAMERA_QUESTION_PATTERNS),
+    re.IGNORECASE,
+)
+
+
+def is_camera_question(text):
+    """True, если запрос явно просит посмотреть на кадр камеры.
+
+    Экранные запросы («что на экране») сюда не попадают: экран
+    анализируется отдельно и только по прямой просьбе.
+    """
+
+    normalized = str(text or "").lower().replace("ё", "е").strip()
+    if not normalized:
+        return False
+    if (
+        "камер" not in normalized
+        and "кадр" not in normalized
+        and any(
+            word in normalized
+            for word in ("экран", "монитор", "скрин", "screenshot")
+        )
+    ):
+        return False
+    return bool(_CAMERA_QUESTION_RE.search(normalized))
+
+
 def hinted_tools_for_query(query):
     if not query:
         return []
@@ -3044,7 +3091,9 @@ class PCAgent:
                         "Посмотреть текущий кадр камеры JARVIS "
                         "(камера телефона или ПК) через Groq Vision. "
                         "Вызывай, когда просят описать, что видно "
-                        "в камере, или прочитать предмет в кадре.",
+                        "в камере, или прочитать предмет в кадре. "
+                        "Каждый новый вопрос о кадре требует нового "
+                        "вызова: не повторяй прошлое описание.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3342,6 +3391,14 @@ class PCAgent:
             for word in ("несколько", "multi", "правк", "изменен")
         ):
             extra_names.append("code_multi_edit")
+        # Вопрос о кадре камеры в инженерном режиме должен получать
+        # инструмент зрения, иначе модель отвечает по старой истории.
+        if (
+            is_camera_question(text)
+            or "камер" in text
+            or "кадр" in text
+        ):
+            extra_names.append("look_at_camera")
 
         if extra_names:
             ordered_names = (
