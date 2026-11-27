@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipPlaywright
+    # Playwright + Chromium (~300-400 МБ) — только по явному запросу.
+    [switch]$WithPlaywright
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,14 +58,18 @@ if (-not (Test-Path -LiteralPath "config\config.json")) {
     Write-Host "[JARVIS] Created config\config.json from example."
 }
 
-if (-not $SkipPlaywright) {
+if ($WithPlaywright) {
     try {
+        & $Python -m pip install "playwright==1.64.1"
         & $Python -m playwright install chromium
     }
     catch {
         Write-Warning "Playwright chromium install failed: $_"
         Write-Warning "Run: .venv\Scripts\python.exe -m playwright install chromium"
     }
+}
+else {
+    Write-Host "[JARVIS] Playwright пропущен (browser automation опционально: install.ps1 -WithPlaywright)."
 }
 
 Write-Host "[JARVIS] Running diagnostics..."

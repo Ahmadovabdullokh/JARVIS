@@ -1,3 +1,5 @@
+; Единственный источник версии: scripts\gen_version.py читает
+; MyAppVersion отсюда и пишет ресурс версии для JARVIS.exe.
 #define MyAppName "JARVIS"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "JARVIS"

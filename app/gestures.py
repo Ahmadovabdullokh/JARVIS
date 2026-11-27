@@ -8,6 +8,7 @@ MediaPipe HandLandmarker работает локально на кадрах Cam
 
 import math
 import queue
+import sys
 import threading
 import time
 from collections import deque
@@ -19,6 +20,31 @@ from app.logging import get_logger
 from app.paths import BASE_DIR, DATA_DIR, MODELS_DIR, resource_path
 
 log = get_logger(__name__)
+
+
+def _stub_matplotlib():
+    """Обходит лишний импорт matplotlib внутри mediapipe.
+
+    ``mediapipe.tasks.python.vision`` подтягивает drawing_utils, а тот
+    импортирует matplotlib ради plot_landmarks — функции, которая
+    жестам не нужна. Без пакета подставляем пустые модули, чтобы не
+    тянуть ~50 МБ в venv и сборку.
+    """
+
+    if "matplotlib" in sys.modules:
+        return
+    try:
+        import matplotlib  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import types
+
+    matplotlib = types.ModuleType("matplotlib")
+    pyplot = types.ModuleType("matplotlib.pyplot")
+    matplotlib.pyplot = pyplot
+    sys.modules["matplotlib"] = matplotlib
+    sys.modules["matplotlib.pyplot"] = pyplot
 
 DEFAULT_SETTINGS = {
     "enabled": False,
@@ -953,6 +979,7 @@ class GestureService:
             raise RuntimeError(
                 f"Не найдена модель MediaPipe: {model_path}"
             )
+        _stub_matplotlib()
         import mediapipe as mp
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision

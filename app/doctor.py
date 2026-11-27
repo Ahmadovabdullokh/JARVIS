@@ -201,6 +201,15 @@ def run_checks():
                 "pip install --no-deps mediapipe==1.2.3 и "
                 "pip install absl-py~=2.3 flatbuffers~=25.9"
             )
+            # mediapipe импортирует matplotlib только для отрисовки;
+            # в рантайме app.gestures подставляет заглушку. Doctor
+            # должен проверять тот же рабочий путь.
+            try:
+                from app.gestures import _stub_matplotlib
+
+                _stub_matplotlib()
+            except Exception:
+                pass
         checks.append(
             _check(
                 f"Опционально {package}",

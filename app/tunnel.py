@@ -31,7 +31,7 @@ import requests
 
 from app import config as config_module
 from app.logging import get_logger
-from app.paths import BASE_DIR, DATA_DIR
+from app.paths import BASE_DIR, DATA_DIR, resource_path
 
 log = get_logger(__name__)
 
@@ -251,6 +251,9 @@ def find_cloudflared():
         os.environ.get("JARVIS_CLOUDFLARED", ""),
         str(BASE_DIR / "tools" / "cloudflared.exe"),
         str(BASE_DIR / "tools" / "cloudflared"),
+        # PyInstaller кладёт datas в _internal/, а не рядом с EXE.
+        str(resource_path("tools", "cloudflared.exe")),
+        str(resource_path("tools", "cloudflared")),
     ]
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):

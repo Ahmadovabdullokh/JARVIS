@@ -1,5 +1,6 @@
 import subprocess
 import time
+import wave
 from pathlib import Path
 
 import pyautogui
@@ -206,20 +207,27 @@ def register(registry):
     def audio_record(duration=5, path=None, rate=44100):
         sounddevice = optional_import("sounddevice")
         numpy = optional_import("numpy")
-        scipy = optional_import("scipy.io.wavfile")
-        if sounddevice is None or numpy is None or scipy is None:
-            return "Для записи звука установите sounddevice, numpy и scipy."
+        if sounddevice is None or numpy is None:
+            return "Для записи звука установите sounddevice и numpy."
         seconds = max(0.2, float(duration or 5))
+        sample_rate = max(8000, int(rate or 44100))
         recording = sounddevice.rec(
-            int(seconds * int(rate or 44100)),
-            samplerate=int(rate or 44100),
+            int(seconds * sample_rate),
+            samplerate=sample_rate,
             channels=1,
             dtype="int16",
         )
         sounddevice.wait()
         output = Path(path or f"recording_{int(time.time())}.wav")
         output.parent.mkdir(parents=True, exist_ok=True)
-        scipy.write(str(output), int(rate or 44100), recording)
+        # stdlib wave вместо scipy.io.wavfile: scipy весит ~135 МБ,
+        # а для PCM-записи хватает двух десятков строк из стандартной
+        # библиотеки. Формат тот же: 16-bit mono PCM.
+        with wave.open(str(output), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(numpy.asarray(recording, dtype=numpy.int16).tobytes())
         return f"Аудио записано: {output}"
 
     @registry.tool(

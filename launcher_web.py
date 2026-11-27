@@ -401,9 +401,31 @@ def run_web_ui(bridge, smoke=False, debug=False):
     """
 
     _prepare_gui()
-    cache = DATA_DIR / ("webview2-debug" if debug else "webview2")
-    cache.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(cache))
+    # Профиль WebView2 — это кэш браузера, а не данные проекта: держим
+    # его в %LOCALAPPDATA%, чтобы чистка/пересборка каталога не ломала
+    # вход и не засоряла data/ сотнями мегабайт.
+    local_appdata = os.environ.get("LOCALAPPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Local"
+    )
+    profile = "webview2-debug" if debug else "webview2"
+    candidates = (
+        os.path.join(local_appdata, "JARVIS", profile),
+        str(DATA_DIR / profile),
+        os.path.join(os.environ.get("TEMP", ""), "JARVIS", profile),
+    )
+    for cache in candidates:
+        try:
+            os.makedirs(cache, exist_ok=True)
+        except OSError as error:
+            # Антивирус/политика могут запретить запись в профиль —
+            # пробуем следующий каталог, а не падаем на старте.
+            log.info(
+                f"[WEB LAUNCHER] Кэш WebView2 недоступен: {cache}: "
+                f"{type(error).__name__}: {error}"
+            )
+            continue
+        os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", cache)
+        break
 
     try:
         import webview

@@ -29,7 +29,8 @@ datas = [
     ("ui", "ui"),
     ("app/locales", "app/locales"),
     ("plugins", "plugins"),
-    ("models", "models"),
+    ("models/hand_landmarker.task", "models"),
+    ("tools/cloudflared.exe", "tools"),
 ]
 datas += collect_data_files("imageio_ffmpeg")
 datas += collect_data_files("webview")
@@ -45,7 +46,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "pandas",
+        "matplotlib",
+        "scipy",
+        "_pytest",
+        "IPython",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
