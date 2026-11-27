@@ -59,7 +59,7 @@ winotify==1.1.0
 icalendar==7.3.0
 python-dateutil==3.0.0
 tzdata==2026.5
-watchdog==6.0.0
+watchdog==7.1.1
 
 # Desktop UX and offline voice fallback
 pystray==0.19.5
