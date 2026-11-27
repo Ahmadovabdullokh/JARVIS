@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 from app import config as config_module
+from app import performance
 from app.logging import get_logger
 
 log = get_logger(__name__)
@@ -99,6 +100,39 @@ def _apply_quality_preset(settings):
     settings["quality"] = name
     settings.update(QUALITY_PRESETS[name])
     return settings
+
+
+def _jpeg_dimensions(data):
+    """Размеры JPEG из заголовка SOF без полного декодирования."""
+
+    try:
+        view = memoryview(data)
+    except TypeError:
+        return 0, 0
+    size = len(view)
+    index = 2
+    sof_markers = {
+        0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+        0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+    }
+    while index + 9 < size:
+        if view[index] != 0xFF:
+            index += 1
+            continue
+        marker = view[index + 1]
+        if marker == 0xFF:
+            index += 1
+            continue
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            index += 2
+            continue
+        length = (view[index + 2] << 8) | view[index + 3]
+        if marker in sof_markers:
+            height = (view[index + 5] << 8) | view[index + 6]
+            width = (view[index + 7] << 8) | view[index + 8]
+            return int(width), int(height)
+        index += 2 + max(2, length)
+    return 0, 0
 
 
 def _mask_url(url):
@@ -198,7 +232,7 @@ def _normalize_settings(settings):
     settings["phone_auto_switch"] = bool(
         settings.get("phone_auto_switch", True)
     )
-    return settings
+    return performance.clamp_camera(settings)
 
 
 def probe_cameras(
@@ -309,6 +343,9 @@ class CameraService:
         self._started_at = 0.0
         self._clients = 0
         self._client_lock = threading.Lock()
+        self._ingest_lock = threading.Lock()
+        self._last_ingest_at = 0.0
+        self._dropped_frames = 0
         self._external_at = 0.0
         self._external_device = ""
         self._external_frames = 0
@@ -341,6 +378,8 @@ class CameraService:
             self._external_at = 0.0
             self._external_device = ""
             self._external_frames = 0
+            self._dropped_frames = 0
+            self._last_ingest_at = 0.0
             self._phone_state = "idle"
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -714,6 +753,32 @@ class CameraService:
             self._overlay_jpeg = bytes(jpeg)
             self._overlay_jpeg_at = float(when or time.time())
 
+    def has_clients(self):
+        """Есть ли MJPEG-зрители (страница камеры открыта)."""
+
+        with self._client_lock:
+            return self._clients > 0
+
+    def has_listeners(self):
+        """Есть ли подписчики кадров (жесты, vision)."""
+
+        with self._listeners_lock:
+            return bool(self._listeners)
+
+    def _effective_ingest_fps(self):
+        try:
+            stream_fps = float(self._settings.get("stream_fps") or 0)
+        except (TypeError, ValueError):
+            stream_fps = 0.0
+        fps = stream_fps
+        if self.has_listeners():
+            try:
+                analyze_fps = float(self._settings.get("analyze_fps") or 0)
+            except (TypeError, ValueError):
+                analyze_fps = 0.0
+            fps = max(fps, analyze_fps)
+        return max(1.0, fps)
+
     def submit_external_jpeg(self, jpeg, rotate=0, device=""):
         """Принимает кадр от телефона/браузера и отдаёт его жестам.
 
@@ -729,6 +794,40 @@ class CameraService:
             return "camera is off"
         if self._settings.get("source") != "phone":
             return "not phone source"
+        if len(jpeg) < 4 or jpeg[0] != 0xFF or jpeg[1] != 0xD8:
+            return "bad jpeg"
+
+        try:
+            angle = int(rotate) % 360
+        except (TypeError, ValueError):
+            angle = 0
+        if angle not in (90, 180, 270):
+            angle = 0
+
+        now = time.time()
+        min_interval = 1.0 / self._effective_ingest_fps()
+        with self._ingest_lock:
+            if now - self._last_ingest_at < min_interval:
+                # Телефон шлёт быстрее, чем нужно; декодировать нечего.
+                self._dropped_frames += 1
+                return ""
+            self._last_ingest_at = now
+
+        if not angle and not self.has_listeners() and not self.has_clients():
+            # Никто не смотрит: храним оригинальный JPEG без декодирования
+            # и повторного кодирования (самая дорогая часть на i3).
+            width, height = _jpeg_dimensions(jpeg)
+            with self._frame_lock:
+                self._raw_jpeg = bytes(jpeg)
+                self._raw_jpeg_at = now
+                if width and height:
+                    self._actual_width = int(width)
+                    self._actual_height = int(height)
+                self._external_at = now
+                self._external_frames += 1
+                if device:
+                    self._external_device = str(device).strip()[:64]
+            return ""
 
         import cv2
         import numpy as np
@@ -741,12 +840,6 @@ class CameraService:
         if frame is None:
             return "bad jpeg"
 
-        try:
-            angle = int(rotate) % 360
-        except (TypeError, ValueError):
-            angle = 0
-        if angle not in (90, 180, 270):
-            angle = 0
         if angle == 90:
             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
         elif angle == 180:
@@ -763,7 +856,6 @@ class CameraService:
             encoded = self._encode_jpeg(frame)
 
         height, width = frame.shape[:2]
-        now = time.time()
         with self._frame_lock:
             self._latest_frame = frame
             self._latest_frame_at = now
@@ -881,6 +973,7 @@ class CameraService:
             "phone_state": self._phone_state,
             "phone_device": self._external_device,
             "phone_frames": self._external_frames,
+            "phone_dropped": self._dropped_frames,
             "phone_timeout": settings.get("phone_timeout", 5.0),
             "phone_auto_switch": bool(
                 settings.get("phone_auto_switch", True)

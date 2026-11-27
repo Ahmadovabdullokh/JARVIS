@@ -8,7 +8,7 @@ import traceback
 from dotenv import load_dotenv
 
 from app import config as config_module
-from app import persona
+from app import performance, persona
 from app.commands import handle_command
 from app.config import (
     code_backend_uses_copilot,
@@ -514,6 +514,11 @@ def initialize():
         f"[JARVIS] LLM: {llm_config['provider']} / "
         f"{llm_config['model']}"
     )
+    perf = performance.profile()
+    log.info(
+        f"[PERF] tier={perf['tier']} cores={perf['cores']} "
+        f"threads={perf['threads']} ram={perf['ram_gb']} ГБ"
+    )
 
     # Распознавание речи
     listener = VoiceListener(
@@ -963,6 +968,7 @@ def process_command(
             and not project_error
             and mode == "tasks"
             and agent_config.get("category_planning", True)
+            and performance.category_planning_enabled()
             and needs_category_planning(text)
         ):
             categories = llm.plan_categories(

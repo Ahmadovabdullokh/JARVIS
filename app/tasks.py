@@ -7,7 +7,6 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from app import notifier
 from app.paths import DATA_DIR
 
 
@@ -209,6 +208,8 @@ class TaskManager:
     def _notify_if_background(self, task, status, detail=""):
         if task and task.get("kind") == "background":
             try:
+                from app import notifier
+
                 notifier.notify_task(
                     task.get("title", "Задача"), status, detail
                 )

@@ -6,7 +6,6 @@ import wave
 
 import numpy as np
 import sounddevice as sd
-from groq import Groq
 
 from app.logging import get_logger
 
@@ -57,7 +56,15 @@ class VoiceListener:
         self.model = model
         self.prompt = str(prompt or "").strip()
 
-        self.client = Groq(api_key=api_key) if api_key else None
+        self.client = None
+        if api_key:
+            try:
+                # groq — ~0.4 с импорта; грузим только при наличии ключа.
+                from groq import Groq
+
+                self.client = Groq(api_key=api_key)
+            except Exception as error:
+                log.info(f"[STT] Groq недоступен: {error}")
         self.local_model = None
         self._prompt_supported = True
 

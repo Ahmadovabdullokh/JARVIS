@@ -3,7 +3,7 @@ import threading
 import time
 
 from app import config as config_module
-from app import i18n, persona, telemetry, ui_theme
+from app import i18n, performance, persona, telemetry, ui_theme
 from app.camera_service import (
     QUALITY_PRESETS,
     get_camera_service,
@@ -190,7 +190,7 @@ class UiBridge:
                 except Exception:
                     level = 0.0
             self._mic_level = max(0.0, float(level))
-            self._mic_stop.wait(0.3)
+            self._mic_stop.wait(performance.mic_interval(0.3))
 
     def shutdown(self):
         with self._lock:
@@ -283,6 +283,7 @@ class UiBridge:
                     "active": config_module.get_active_profile(config),
                     "names": config_module.profile_names(config),
                 },
+                "performance": performance.bootstrap_payload(),
             }
         )
         return data

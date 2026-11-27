@@ -119,6 +119,50 @@ class PhoneCameraSourceTests(unittest.TestCase):
         self.assertEqual(self.service.latest_jpeg(), b"")
         self.assertEqual(self.service.snapshot_jpeg(), b"")
 
+    def test_frames_are_throttled_to_effective_fps(self):
+        self.start_phone(stream_fps=1, analyze_fps=1, mirror=False)
+
+        for _ in range(5):
+            self.assertEqual(
+                self.service.submit_external_jpeg(make_jpeg()), ""
+            )
+
+        status = self.service.status()
+        self.assertEqual(status["phone_frames"], 1)
+        self.assertEqual(status["phone_dropped"], 4)
+
+    def test_idle_frame_passes_through_without_decoding(self):
+        self.start_phone(mirror=True)
+        jpeg = make_jpeg()
+
+        self.assertEqual(self.service.submit_external_jpeg(jpeg), "")
+
+        self.assertIsNone(self.service.latest_frame())
+        self.assertEqual(self.service.latest_jpeg(), jpeg)
+        status = self.service.status()
+        self.assertEqual((status["width"], status["height"]), (40, 20))
+
+    def test_listener_forces_frame_decode(self):
+        frames = []
+        self.start_phone(mirror=False)
+        self.service.subscribe(frames.append)
+
+        self.assertEqual(self.service.submit_external_jpeg(make_jpeg()), "")
+
+        self.assertEqual(len(frames), 1)
+        self.assertIsNotNone(self.service.latest_frame())
+
+    def test_mjpeg_client_forces_frame_processing(self):
+        self.start_phone(mirror=True)
+        self.assertTrue(self.service.acquire_client())
+        try:
+            self.assertEqual(
+                self.service.submit_external_jpeg(make_jpeg()), ""
+            )
+            self.assertIsNotNone(self.service.latest_frame())
+        finally:
+            self.service.release_client()
+
     def test_stop_resets_phone_state(self):
         self.start_phone()
         self.service.submit_external_jpeg(make_jpeg())

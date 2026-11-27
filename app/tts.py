@@ -5,7 +5,6 @@ import subprocess
 import threading
 import time
 
-import edge_tts
 import imageio_ffmpeg
 import sounddevice as sd
 
@@ -307,6 +306,10 @@ class TTS:
         Один WebSocket и один ffmpeg на фразу дают непрерывную
         речь без пауз между предложениями.
         """
+
+        # edge-tts тянет за собой ~0.8 с импорта; грузим только
+        # при первой реальной озвучке.
+        import edge_tts
 
         started = time.monotonic()
         first_audio_at = None

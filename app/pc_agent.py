@@ -15,6 +15,7 @@ import pygetwindow as gw
 import pyperclip
 import requests
 
+from app import performance
 from app.code_state import CodeAgentState
 from app.logging import get_logger
 from app.memory import Memory
@@ -327,7 +328,7 @@ class PCAgent:
 
         self.memory = Memory()
         self.safety = SafetyManager(self.config)
-        self.tasks = TaskManager()
+        self.tasks = TaskManager(max_workers=performance.task_workers())
         self.code_state = CodeAgentState()
         self.registry = ToolRegistry(
             context=ToolContext(
@@ -339,6 +340,7 @@ class PCAgent:
                 code_state=self.code_state,
             ),
             safety=self.safety,
+            max_workers=performance.tool_workers(),
         )
         self.loaded_tool_modules, self.tool_load_errors = (
             register_all_tools(self.registry, config=self.config)
@@ -3389,7 +3391,7 @@ class PCAgent:
             limit = int(
                 agent_config.get("max_tools_per_request", 100)
             )
-        limit = max(20, int(limit or 100))
+        limit = performance.clamp_tool_limit(max(20, int(limit or 100)))
 
         disabled_legacy = getattr(
             self,

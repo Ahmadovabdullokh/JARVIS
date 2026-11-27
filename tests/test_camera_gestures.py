@@ -296,10 +296,16 @@ class CameraServiceTests(unittest.TestCase):
                 "jpeg_quality": 40,
             }
         }
-        with patch.object(
-            gestures.config_module,
-            "read_config_file",
-            return_value=config,
+        with (
+            patch.object(
+                gestures.config_module,
+                "read_config_file",
+                return_value=config,
+            ),
+            patch(
+                "app.performance.detect_tier",
+                return_value="standard",
+            ),
         ):
             settings = load_camera_settings()
         self.assertEqual(settings["quality"], "quality")
@@ -311,6 +317,46 @@ class CameraServiceTests(unittest.TestCase):
             settings["jpeg_quality"],
             QUALITY_PRESETS["quality"]["jpeg_quality"],
         )
+
+
+class OverlayGatingTests(unittest.TestCase):
+    def test_overlay_is_not_encoded_without_clients(self):
+        encoded = []
+        camera = SimpleNamespace(
+            has_clients=lambda: False,
+            encode_jpeg=lambda frame: encoded.append(frame) or b"jpeg",
+            publish_overlay=lambda jpeg: None,
+        )
+        service = SimpleNamespace(
+            _camera=camera,
+            _last_overlay_at=0.0,
+            _error="",
+        )
+
+        gestures.GestureService._publish_overlay(
+            service, np.zeros((4, 4, 3), dtype=np.uint8)
+        )
+
+        self.assertEqual(encoded, [])
+
+    def test_overlay_is_encoded_for_clients(self):
+        published = []
+        camera = SimpleNamespace(
+            has_clients=lambda: True,
+            encode_jpeg=lambda frame: b"jpeg",
+            publish_overlay=published.append,
+        )
+        service = SimpleNamespace(
+            _camera=camera,
+            _last_overlay_at=0.0,
+            _error="",
+        )
+
+        gestures.GestureService._publish_overlay(
+            service, np.zeros((4, 4, 3), dtype=np.uint8)
+        )
+
+        self.assertEqual(published, [b"jpeg"])
 
 
 if __name__ == "__main__":

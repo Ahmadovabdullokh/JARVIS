@@ -100,6 +100,7 @@
     cameraStreamErrorAt: 0,
     cameraStreamLoading: false,
     cameraBackground: true,
+    performance: null,
     cameraImmersive: true,
     cameraDrawerOpen: false,
     cameraLegendOpen: false,
@@ -324,6 +325,8 @@
     state.micEnabled = data.mic_enabled !== false;
     state.camera = data.camera || null;
     state.gesture = data.gesture || null;
+    state.performance = data.performance || state.performance || null;
+    applyProfileDefaults();
     setStatus(data.status || state.status);
     renderMode();
     renderTelemetry();
@@ -584,19 +587,46 @@
     }
   }
 
-  function applyPerfLite(enabled) {
+  function applyPerfLite(enabled, persist) {
     const active = Boolean(enabled);
     document.body.classList.toggle("perf-lite", active);
     if (els.setPerfLite) {
       els.setPerfLite.checked = active;
     }
-    try {
-      localStorage.setItem("jarvis.lite", active ? "1" : "0");
-    } catch (error) {
-      /* storage is optional */
+    if (persist !== false) {
+      try {
+        localStorage.setItem("jarvis.lite", active ? "1" : "0");
+      } catch (error) {
+        /* storage is optional */
+      }
     }
     if (reactor.setLite) {
       reactor.setLite(active);
+    }
+  }
+
+  function hasPref(key) {
+    try {
+      return localStorage.getItem(key) !== null;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function profileIsLow() {
+    return Boolean(state.performance && state.performance.tier === "low");
+  }
+
+  function applyProfileDefaults() {
+    // Сервер сообщает tier из app/performance.py. Явный выбор
+    // пользователя в localStorage всегда главнее.
+    const low = profileIsLow();
+    if (!hasPref("jarvis.lite")) {
+      applyPerfLite(low, false);
+    }
+    if (!hasPref("jarvis.camera.background")) {
+      state.cameraBackground = !low;
+      applyCameraChrome();
     }
   }
 
@@ -1368,8 +1398,12 @@
   }
 
   function cameraStreamWanted() {
-    return cameraRunning() &&
-      (state.page === "camera" || state.cameraBackground !== false);
+    if (!cameraRunning()) return false;
+    if (profileIsLow() && state.cameraBackground === false) {
+      // На слабом железе не тянем MJPEG вне страницы камеры.
+      return state.page === "camera";
+    }
+    return state.page === "camera" || state.cameraBackground !== false;
   }
 
   function syncCameraStream() {

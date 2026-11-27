@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from app import performance
 from app.logging import get_logger
 from app.safety import redact_secrets
 
@@ -1204,7 +1205,10 @@ class LLMClient:
                 )
             if can_parallel and not blocked_any:
                 with ThreadPoolExecutor(
-                    max_workers=min(4, len(tool_calls)),
+                    max_workers=min(
+                        performance.parallel_workers(),
+                        len(tool_calls),
+                    ),
                     thread_name_prefix="JARVIS-LLMTool",
                 ) as executor:
                     futures = [

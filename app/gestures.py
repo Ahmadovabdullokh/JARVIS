@@ -13,6 +13,7 @@ import time
 from collections import deque
 
 from app import config as config_module
+from app import performance
 from app.camera_service import get_camera_service
 from app.logging import get_logger
 from app.paths import BASE_DIR, DATA_DIR, MODELS_DIR, resource_path
@@ -515,7 +516,7 @@ def load_gesture_settings():
     settings["profile"] = profile if profile in profiles else "media"
     settings["profiles"] = profiles
     settings["actions"] = profiles[settings["profile"]]
-    return settings
+    return performance.clamp_gestures(settings)
 
 
 def _model_path():
@@ -798,6 +799,7 @@ class GestureService:
         self._pointer_scroll_y = None
         self._prev_gray = None
         self._prev_tip = None
+        self._last_overlay_at = 0.0
 
     # ------------------------------------------------------------------
     # Управление
@@ -1018,6 +1020,9 @@ class GestureService:
         import cv2
         import numpy as np
 
+        wants_overlay = bool(
+            self._camera is not None and self._camera.has_clients()
+        )
         detect_frame = frame
         detect_width = int(self._settings.get("detection_width") or 480)
         if frame.shape[1] > detect_width:
@@ -1053,7 +1058,7 @@ class GestureService:
                 side = handedness[0][0].category_name or ""
             self._hand = side
 
-        overlay = frame.copy()
+        overlay = frame.copy() if wants_overlay else None
         label = ""
         action_label = ""
         candidate = ""
@@ -1116,7 +1121,8 @@ class GestureService:
             )
             if pointer_action:
                 action_label = pointer_action
-            self._draw(overlay, hand_landmarks, label)
+            if overlay is not None:
+                self._draw(overlay, hand_landmarks, label)
             if label:
                 emitted = self._emit(label, primary)
                 action_label = emitted or action_label
@@ -1126,7 +1132,8 @@ class GestureService:
             self._size_history.clear()
             self._decay_candidate()
             self._pointer_lost()
-            self._draw(overlay, [], "")
+            if overlay is not None:
+                self._draw(overlay, [], "")
 
         self._publish_overlay(overlay)
         self._frames += 1
@@ -1390,9 +1397,17 @@ class GestureService:
                 self._candidate = ""
 
     def _publish_overlay(self, frame):
-        if self._camera is None:
+        if self._camera is None or frame is None:
             return
         try:
+            if not self._camera.has_clients():
+                # Никто не смотрит MJPEG — кодировать JPEG незачем.
+                return
+            now = time.monotonic()
+            interval = 1.0 / max(1.0, performance.overlay_fps())
+            if now - self._last_overlay_at < interval:
+                return
+            self._last_overlay_at = now
             jpeg = self._camera.encode_jpeg(frame)
             if jpeg:
                 self._camera.publish_overlay(jpeg)
