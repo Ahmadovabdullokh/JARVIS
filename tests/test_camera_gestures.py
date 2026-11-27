@@ -319,6 +319,53 @@ class CameraServiceTests(unittest.TestCase):
         )
 
 
+class GestureRestartTests(unittest.TestCase):
+    class FakeLandmarker:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def test_landmarker_is_reused_after_stop(self):
+        created = []
+
+        def create():
+            landmarker = self.FakeLandmarker()
+            created.append(landmarker)
+            return object(), object(), landmarker
+
+        camera = SimpleNamespace(
+            is_running=lambda: True,
+            subscribe=lambda callback: None,
+            unsubscribe=lambda callback: None,
+            has_clients=lambda: False,
+        )
+        service = gestures.GestureService()
+
+        def wait_running():
+            deadline = time.time() + 3.0
+            while time.time() < deadline and not service.status()["running"]:
+                time.sleep(0.02)
+
+        with patch.object(
+            gestures, "get_camera_service", return_value=camera
+        ), patch.object(service, "_create_landmarker", side_effect=create):
+            service.start()
+            wait_running()
+            first = service._landmarker
+            self.assertIsNotNone(first)
+            service.stop()
+            # Закрытие чужого landmarker роняло detect после рестарта.
+            self.assertFalse(first.closed)
+
+            service.start()
+            wait_running()
+            self.assertIs(service._landmarker, first)
+            self.assertEqual(len(created), 1)
+            service.stop()
+
+
 class OverlayGatingTests(unittest.TestCase):
     def test_overlay_is_not_encoded_without_clients(self):
         encoded = []

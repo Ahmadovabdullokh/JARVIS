@@ -1,12 +1,16 @@
 """Тесты удалённого доступа: бан, X-Forwarded-For, политика и токен."""
 
+import io
 import json
 import time
 import unittest
 from http.client import HTTPConnection
 from unittest.mock import patch
 
+from PIL import Image
+
 from app import remote_server
+from app.camera_service import CameraService
 
 
 class FakeBridge:
@@ -302,6 +306,82 @@ class RemoteHttpTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["ok"])
         self.assertEqual(self.bridge.calls[0][0], "poll")
         self.assertEqual(self.bridge.calls[0][2], "remote")
+
+
+class CameraFrameIngestTests(unittest.TestCase):
+    """Приём ~30 кадров/с без декодирования на ПК."""
+
+    token = "frame-token-123"
+
+    def setUp(self):
+        with remote_server._auth_lock:
+            remote_server._auth_failures.clear()
+        self.camera = CameraService()
+        self.camera.start(
+            {
+                "source": "phone",
+                "enabled": True,
+                "mirror": False,
+                "ingest_fps": 30,
+                "analyze_fps": 8,
+            }
+        )
+        self.addCleanup(self.camera.stop)
+        # Патчи живут весь тест: обработчик запроса вызывает
+        # get_camera_service() в момент кадра, а не при старте сервера.
+        token_patch = patch.object(
+            remote_server, "get_remote_token", return_value=self.token
+        )
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
+        camera_patch = patch.object(
+            remote_server,
+            "get_camera_service",
+            return_value=self.camera,
+        )
+        camera_patch.start()
+        self.addCleanup(camera_patch.stop)
+        self.server = remote_server.RemoteServer(FakeBridge(), port=0)
+        self.server.start()
+        self.addCleanup(self.server.stop)
+
+    def test_thirty_fps_frames_pass_through_without_decoding(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (40, 20), (30, 120, 200)).save(
+            buffer, format="JPEG", quality=80
+        )
+        jpeg = buffer.getvalue()
+        connection = HTTPConnection(
+            self.server.host, self.server.port, timeout=5
+        )
+        sent = 0
+        try:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                connection.request(
+                    "POST",
+                    "/camera/frame?rotate=0&mirror=0",
+                    body=jpeg,
+                    headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "Content-Type": "image/jpeg",
+                        "X-Jarvis-Device": "Pixel",
+                    },
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+                sent += 1
+                time.sleep(0.033)
+        finally:
+            connection.close()
+
+        self.assertGreaterEqual(sent, 20)
+        status = self.camera.status()
+        self.assertGreaterEqual(status["phone_frames"], sent - 2)
+        self.assertLessEqual(status["phone_dropped"], 2)
+        # Сырой JPEG идёт в MJPEG без imdecode/imencode.
+        self.assertIsNone(self.camera.latest_frame())
 
 
 if __name__ == "__main__":

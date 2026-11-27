@@ -826,12 +826,25 @@ class GestureService:
         self._prev_gray = None
         self._prev_tip = None
         self._last_overlay_at = 0.0
+        # start/stop переводят сервис между состояниями последовательно:
+        # иначе новый landmarker появлялся, пока старый поток ещё
+        # закрывал MediaPipe, и detect падал с
+        # "cannot schedule new futures after shutdown".
+        self._transition = threading.Lock()
+        self._mp = None
+        self._landmarker_key = None
 
     # ------------------------------------------------------------------
     # Управление
     # ------------------------------------------------------------------
 
     def start(self, settings=None):
+        # Последовательный переход: stop() дожидается старого потока
+        # раньше, чем новый получит landmarker.
+        with self._transition:
+            return self._start(settings)
+
+    def _start(self, settings=None):
         with self._lock:
             if self._running:
                 return self.status()
@@ -875,6 +888,10 @@ class GestureService:
         return self.status()
 
     def stop(self):
+        with self._transition:
+            self._stop_service()
+
+    def _stop_service(self):
         with self._lock:
             self._stop.set()
             if self._camera is not None:
@@ -884,15 +901,9 @@ class GestureService:
             self._running = False
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=3.0)
-        with self._lock:
-            landmarker = self._landmarker
-            self._landmarker = None
-            self._model_ready = False
-        if landmarker is not None:
-            try:
-                landmarker.close()
-            except Exception:
-                pass
+        # Landmarker не закрываем: следующий start() переиспользует его
+        # (создание занимает ~1 с), а закрытие чужого экземпляра роняло
+        # detect с "cannot schedule new futures after shutdown".
         log.info("[GESTURES] Остановлено.")
 
     def set_enabled(self, enabled):
@@ -1002,23 +1013,87 @@ class GestureService:
         )
         return mp, vision, vision.HandLandmarker.create_from_options(options)
 
+    def _landmarker_settings_key(self):
+        """Настройки, при смене которых landmarker нужно пересоздать."""
+
+        return (
+            int(self._settings.get("num_hands") or 1),
+            float(self._settings.get("min_detection_confidence") or 0.6),
+            float(self._settings.get("min_tracking_confidence") or 0.5),
+        )
+
+    def _ensure_landmarker(self):
+        """Возвращает загруженный landmarker, создавая его при необходимости.
+
+        Экземпляр переиспользуется между запусками: создание MediaPipe
+        занимает около секунды. Закрывает его только поток-владелец,
+        иначе detect падает с "cannot schedule new futures after
+        shutdown".
+        """
+
+        key = self._landmarker_settings_key()
+        with self._lock:
+            landmarker = self._landmarker
+            mp = self._mp
+            current_key = self._landmarker_key
+        if landmarker is not None and mp is not None and current_key == key:
+            return mp, landmarker
+        created_mp, _, created = self._create_landmarker()
+        with self._lock:
+            previous = self._landmarker
+            self._mp = created_mp
+            self._landmarker = created
+            self._landmarker_key = key
+            self._model_ready = True
+            self._error = ""
+        if previous is not None and previous is not created:
+            try:
+                previous.close()
+            except Exception:
+                pass
+        return created_mp, created
+
+    def _discard_landmarker(self, landmarker):
+        """Закрывает повреждённый landmarker: следующий start создаст новый."""
+
+        with self._lock:
+            if self._landmarker is not landmarker:
+                return
+            self._landmarker = None
+            self._mp = None
+            self._landmarker_key = None
+            self._model_ready = False
+        try:
+            landmarker.close()
+        except Exception:
+            pass
+
+    def _finish_worker(self):
+        """Сбрасывает состояние, только если поток всё ещё «свой».
+
+        stop() обнуляет ``_thread`` до join(), поэтому завершающийся
+        старый поток не должен помечать остановленным только что
+        запущенный новый.
+        """
+
+        current = threading.current_thread()
+        with self._lock:
+            if self._thread is not current:
+                return
+            self._thread = None
+            self._running = False
+            camera = self._camera
+        if camera is not None:
+            camera.unsubscribe(self._on_frame)
+
     def _worker(self):
         try:
-            mp, _, landmarker = self._create_landmarker()
+            mp, landmarker = self._ensure_landmarker()
         except Exception as error:
             self._error = f"{type(error).__name__}: {error}"
             log.info("[GESTURES] Не удалось загрузить MediaPipe: %s", self._error)
-            with self._lock:
-                self._running = False
-                self._thread = None
-                if self._camera is not None:
-                    self._camera.unsubscribe(self._on_frame)
+            self._finish_worker()
             return
-
-        with self._lock:
-            self._landmarker = landmarker
-            self._model_ready = True
-            self._error = ""
 
         log.info("[GESTURES] MediaPipe готов.")
         try:
@@ -1031,17 +1106,9 @@ class GestureService:
         except Exception as error:
             self._error = f"{type(error).__name__}: {error}"
             log.info("[GESTURES] Критическая ошибка: %s", self._error)
+            self._discard_landmarker(landmarker)
         finally:
-            try:
-                landmarker.close()
-            except Exception:
-                pass
-            with self._lock:
-                if self._landmarker is landmarker:
-                    self._landmarker = None
-                self._model_ready = False
-                self._running = False
-                self._thread = None
+            self._finish_worker()
 
     def _process(self, mp, landmarker, frame):
         import cv2
@@ -1085,7 +1152,9 @@ class GestureService:
                 side = handedness[0][0].category_name or ""
             self._hand = side
 
-        overlay = frame.copy() if wants_overlay else None
+        # Без рук рисовать нечего: не копируем и не кодируем кадр,
+        # чтобы MJPEG-превью показывало сырой поток телефона.
+        overlay = frame.copy() if (wants_overlay and hand_landmarks) else None
         label = ""
         action_label = ""
         candidate = ""

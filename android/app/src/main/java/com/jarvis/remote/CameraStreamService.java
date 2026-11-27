@@ -37,6 +37,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -67,8 +69,15 @@ public class CameraStreamService extends Service implements LifecycleOwner {
     private static final String CHANNEL = "jarvis_camera";
     private static final int NOTIFICATION_ID = 43;
     private static final long NOTIFY_INTERVAL_MS = 4000L;
-    private static final long MIN_INTERVAL_MS = 66L;
-    private static final long MAX_INTERVAL_MS = 250L;
+    /** 30 мс — потолок ~33 fps: кодирование уже на телефоне. */
+    private static final long MIN_INTERVAL_MS = 30L;
+    private static final int MAX_TARGET_FPS = 30;
+    /**
+     * Несколько потоков отправки: задержка одного POST больше не режет
+     * fps. Три соединения скрадывают и высокую задержку тоннеля.
+     */
+    private static final int UPLOAD_WORKERS = 3;
+    private static final int JPEG_QUALITY = 78;
     private static final long SOURCE_RETRY_MIN_MS = 3000L;
     private static final long SOURCE_RETRY_MAX_MS = 30000L;
     private static final long SOURCE_FORCE_INTERVAL_MS = 1500L;
@@ -79,19 +88,25 @@ public class CameraStreamService extends Service implements LifecycleOwner {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService cameraExecutor =
             Executors.newSingleThreadExecutor();
-    private final BlockingQueue<Frame> queue = new ArrayBlockingQueue<>(2);
+    /** Очередь намеренно короткая: устаревший кадр хуже пропущенного. */
+    private final BlockingQueue<Frame> queue = new ArrayBlockingQueue<>(4);
+    private final List<Thread> uploadThreads = new ArrayList<>();
+    private final Object statsLock = new Object();
 
     private ProcessCameraProvider provider;
     private ImageAnalysis analysis;
 
-    private volatile Thread uploadThread;
+    // Переиспользуемые буферы NV21: иначе 30 fps дают ~14 МБ мусора в с.
+    private byte[] nv21Scratch = new byte[0];
+    private byte[] orientedScratch = new byte[0];
+
     private volatile boolean streaming = false;
     private volatile boolean uploading = false;
     private volatile int lens = LENS_BACK;
-    private volatile int targetFps = 10;
+    private volatile int targetFps = 30;
     private volatile int width = 640;
     private volatile int height = 480;
-    private volatile long intervalMs = 100L;
+    private volatile long intervalMs = MIN_INTERVAL_MS;
     private volatile int sentFrames = 0;
     private volatile int failedFrames = 0;
     private volatile int lastPostMs = 0;
@@ -218,7 +233,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
             lens = intent.getIntExtra(EXTRA_LENS, lens) == LENS_FRONT
                     ? LENS_FRONT : LENS_BACK;
             targetFps = clamp(intent.getIntExtra(EXTRA_FPS, targetFps),
-                    4, 20);
+                    1, MAX_TARGET_FPS);
             width = clamp(intent.getIntExtra(EXTRA_WIDTH, width),
                     320, 1920);
             height = clamp(intent.getIntExtra(EXTRA_HEIGHT, height),
@@ -231,8 +246,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         if (!streaming) {
             startStreaming();
         } else {
-            intervalMs = Math.max(MIN_INTERVAL_MS,
-                    1000L / Math.max(4, targetFps));
+            intervalMs = intervalFor(targetFps);
             rebindAnalysis();
         }
         return START_STICKY;
@@ -244,11 +258,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         streaming = false;
         uploading = false;
         handler.removeCallbacksAndMessages(null);
-        Thread thread = uploadThread;
-        if (thread != null) {
-            thread.interrupt();
-            uploadThread = null;
-        }
+        stopUploaders();
         queue.clear();
         if (provider != null) {
             try {
@@ -299,15 +309,38 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         lastSourceAttempt = 0L;
         sourceReady = false;
         sourceRetryMs = SOURCE_RETRY_MIN_MS;
-        intervalMs = Math.max(
-                MIN_INTERVAL_MS, 1000L / Math.max(4, targetFps));
+        intervalMs = intervalFor(targetFps);
         statusText = "Ожидание ПК";
         queue.clear();
-        uploadThread = new Thread(this::uploadLoop, "JARVIS-CameraUpload");
-        uploadThread.start();
+        startUploaders();
         bindCamera();
         new Thread(() -> ensureSource(true), "JARVIS-CameraSource").start();
         handler.postDelayed(notifyTick, NOTIFY_INTERVAL_MS);
+    }
+
+    /**
+     * Интервал анализа с 10% допуском на джиттер камеры: при ровных
+     * 33 мс и пороге 33 мс каждый второй кадр отбрасывался бы.
+     */
+    private static long intervalFor(int fps) {
+        int safe = Math.max(1, fps);
+        return Math.max(MIN_INTERVAL_MS, (900L + safe - 1) / safe);
+    }
+
+    private void startUploaders() {
+        for (int index = 0; index < UPLOAD_WORKERS; index++) {
+            Thread worker = new Thread(
+                    this::uploadLoop, "JARVIS-CameraUpload-" + index);
+            worker.start();
+            uploadThreads.add(worker);
+        }
+    }
+
+    private void stopUploaders() {
+        for (Thread worker : uploadThreads) {
+            worker.interrupt();
+        }
+        uploadThreads.clear();
     }
 
     private void stopStreaming() {
@@ -317,11 +350,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         streaming = false;
         uploading = false;
         handler.removeCallbacks(notifyTick);
-        Thread thread = uploadThread;
-        if (thread != null) {
-            thread.interrupt();
-            uploadThread = null;
-        }
+        stopUploaders();
         queue.clear();
         unbindAnalysis();
         statusText = "Остановлено";
@@ -358,7 +387,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         }
     }
 
-    private void ensureSource(boolean force) {
+    private synchronized void ensureSource(boolean force) {
         long now = SystemClock.elapsedRealtime();
         long minInterval = force
                 ? SOURCE_FORCE_INTERVAL_MS : sourceRetryMs;
@@ -370,8 +399,11 @@ public class CameraStreamService extends Service implements LifecycleOwner {
             JSONObject payload = new JSONObject();
             payload.put("enabled", true);
             payload.put("source", "phone");
-            // Фронтальная камера зеркалится, основная — нет.
-            payload.put("mirror", lens == LENS_FRONT);
+            // Поворот и зеркало телефон делает сам (фронтальная камера
+            // зеркалится), поэтому ПК не должен повторять это — иначе
+            // картинка отразится дважды и на каждый кадр снова
+            // понадобится перекодирование JPEG.
+            payload.put("mirror", false);
             JarvisApi.rpc(this, "set_camera", payload);
             sourceReady = true;
             sourceRetryMs = SOURCE_RETRY_MIN_MS;
@@ -459,12 +491,29 @@ public class CameraStreamService extends Service implements LifecycleOwner {
                 return;
             }
             lastAnalyzed = now;
-            int rotation = image.getImageInfo().getRotationDegrees();
-            byte[] jpeg = encodeJpeg(image);
+            int frameWidth = image.getWidth();
+            int frameHeight = image.getHeight();
+            byte[] nv21 = toNv21(image, frameWidth, frameHeight);
+            if (nv21 == null) {
+                return;
+            }
+            // Поворот и зеркало делаем здесь, а не на ПК: сервер тогда
+            // просто пересылает JPEG в MJPEG без декодирования.
+            byte[] jpeg = transformAndEncode(
+                    nv21,
+                    frameWidth,
+                    frameHeight,
+                    image.getImageInfo().getRotationDegrees(),
+                    lens == LENS_FRONT);
             if (jpeg == null || jpeg.length == 0) {
                 return;
             }
-            queue.offer(new Frame(jpeg, rotation));
+            Frame frame = new Frame(jpeg);
+            if (!queue.offer(frame)) {
+                // Сеть отстаёт: свежий кадр полезнее устаревшего.
+                queue.poll();
+                queue.offer(frame);
+            }
         } catch (Exception error) {
             lastError = "кадр: " + error.getMessage();
         } finally {
@@ -472,20 +521,98 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         }
     }
 
-    /** YUV_420_888 → NV21 → JPEG (в camera-core 1.3 нет готового JPEG-выхода). */
+    /** Поворачивает NV21 по часовой стрелке, зеркалит и кодирует в JPEG. */
 
-    private byte[] encodeJpeg(ImageProxy image) {
-        int frameWidth = image.getWidth();
-        int frameHeight = image.getHeight();
-        byte[] nv21 = toNv21(image, frameWidth, frameHeight);
-        if (nv21 == null) {
-            return null;
+    private byte[] transformAndEncode(
+            byte[] nv21, int frameWidth, int frameHeight,
+            int rotation, boolean mirror) {
+        int angle = ((rotation % 360) + 360) % 360;
+        if (angle == 0 && !mirror) {
+            return compressJpeg(nv21, frameWidth, frameHeight);
         }
+        // dst(x', y') = src(x = a*x' + b*y' + c, y = d*x' + e*y' + f):
+        // сначала поворот по часовой стрелке, затем зеркало по
+        // горизонтали — ровно то, что раньше делал ПК (cv2.rotate + flip).
+        int a;
+        int b;
+        int c;
+        int d;
+        int e;
+        int f;
+        switch (angle) {
+            case 90:
+                if (mirror) {
+                    a = 0; b = 1; c = 0; d = 1; e = 0; f = 0;
+                } else {
+                    a = 0; b = 1; c = 0; d = -1; e = 0; f = frameHeight - 1;
+                }
+                break;
+            case 180:
+                if (mirror) {
+                    a = 1; b = 0; c = 0; d = 0; e = -1; f = frameHeight - 1;
+                } else {
+                    a = -1; b = 0; c = frameWidth - 1;
+                    d = 0; e = -1; f = frameHeight - 1;
+                }
+                break;
+            case 270:
+                if (mirror) {
+                    a = 0; b = -1; c = frameWidth - 1;
+                    d = -1; e = 0; f = frameHeight - 1;
+                } else {
+                    a = 0; b = -1; c = frameWidth - 1; d = 1; e = 0; f = 0;
+                }
+                break;
+            default: // angle == 0 и зеркало
+                a = -1; b = 0; c = frameWidth - 1; d = 0; e = 1; f = 0;
+                break;
+        }
+        boolean swap = angle == 90 || angle == 270;
+        int dstWidth = swap ? frameHeight : frameWidth;
+        int dstHeight = swap ? frameWidth : frameHeight;
+        int frameSize = dstWidth * dstHeight * 3 / 2;
+        if (orientedScratch.length != frameSize) {
+            orientedScratch = new byte[frameSize];
+        }
+        byte[] dst = orientedScratch;
+        int write = 0;
+        for (int yp = 0; yp < dstHeight; yp++) {
+            int baseX = b * yp + c;
+            int baseY = e * yp + f;
+            for (int xp = 0; xp < dstWidth; xp++) {
+                int x = baseX + a * xp;
+                int y = baseY + d * xp;
+                dst[write++] = nv21[y * frameWidth + x];
+            }
+        }
+        int srcChromaWidth = frameWidth / 2;
+        int srcChromaOffset = frameWidth * frameHeight;
+        int dstChromaWidth = dstWidth / 2;
+        int dstChromaHeight = dstHeight / 2;
+        int c2 = c / 2;
+        int f2 = f / 2;
+        for (int yp = 0; yp < dstChromaHeight; yp++) {
+            int baseX = b * yp + c2;
+            int baseY = e * yp + f2;
+            for (int xp = 0; xp < dstChromaWidth; xp++) {
+                int x = baseX + a * xp;
+                int y = baseY + d * xp;
+                int index = srcChromaOffset
+                        + (y * srcChromaWidth + x) * 2;
+                dst[write++] = nv21[index];
+                dst[write++] = nv21[index + 1];
+            }
+        }
+        return compressJpeg(dst, dstWidth, dstHeight);
+    }
+
+    private byte[] compressJpeg(
+            byte[] nv21, int frameWidth, int frameHeight) {
         YuvImage yuv = new YuvImage(
                 nv21, ImageFormat.NV21, frameWidth, frameHeight, null);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         boolean ok = yuv.compressToJpeg(
-                new Rect(0, 0, frameWidth, frameHeight), 78, out);
+                new Rect(0, 0, frameWidth, frameHeight), JPEG_QUALITY, out);
         return ok ? out.toByteArray() : null;
     }
 
@@ -495,7 +622,11 @@ public class CameraStreamService extends Service implements LifecycleOwner {
             return null;
         }
         int frameSize = frameWidth * frameHeight;
-        byte[] nv21 = new byte[frameSize * 3 / 2];
+        int total = frameSize * 3 / 2;
+        if (nv21Scratch.length != total) {
+            nv21Scratch = new byte[total];
+        }
+        byte[] nv21 = nv21Scratch;
         ImageProxy.PlaneProxy yPlane = planes[0];
         ImageProxy.PlaneProxy uPlane = planes[1];
         ImageProxy.PlaneProxy vPlane = planes[2];
@@ -503,9 +634,14 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         int yRowStride = yPlane.getRowStride();
         int yPixelStride = yPlane.getPixelStride();
         int position = 0;
-        if (yRowStride == frameWidth && yPixelStride == 1) {
-            yBuffer.get(nv21, 0, frameSize);
-            position = frameSize;
+        if (yPixelStride == 1) {
+            // Строки Y копируем целиком: на 30 fps это заметно дешевле
+            // поштучного чтения байтов.
+            for (int row = 0; row < frameHeight; row++) {
+                yBuffer.position(row * yRowStride);
+                yBuffer.get(nv21, position, frameWidth);
+                position += frameWidth;
+            }
         } else {
             for (int row = 0; row < frameHeight; row++) {
                 int rowStart = row * yRowStride;
@@ -559,9 +695,9 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         long started = SystemClock.elapsedRealtime();
         HttpURLConnection conn = null;
         try {
-            URL url = new URL(
-                    base + "/camera/frame?rotate=" + frame.rotation
-                            + "&mirror=" + (lens == LENS_FRONT ? 1 : 0));
+            // Кадр уже повёрнут и зеркалён на телефоне: ПК не должен
+            // декодировать и заново кодировать его (rotate=0&mirror=0).
+            URL url = new URL(base + "/camera/frame?rotate=0&mirror=0");
             conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(15000);
@@ -581,7 +717,7 @@ public class CameraStreamService extends Service implements LifecycleOwner {
             long elapsed = SystemClock.elapsedRealtime() - started;
             lastPostMs = (int) elapsed;
             if (code >= 400) {
-                failedFrames++;
+                recordFailed();
                 lastError = "HTTP " + code + ": " + trim(body);
                 if (code == 401 || code == 403
                         || code == 409 || code == 503) {
@@ -591,23 +727,15 @@ public class CameraStreamService extends Service implements LifecycleOwner {
                     ensureSource(false);
                 }
             } else {
-                sentFrames++;
                 if (lastError.startsWith("HTTP") || lastError.startsWith("ПК:")
                         || lastError.startsWith("кадр:")
                         || lastError.startsWith("сеть:")) {
                     lastError = "";
                 }
-                fpsCount++;
-                long span = SystemClock.elapsedRealtime() - fpsMark;
-                if (span >= 1000L) {
-                    measuredFps = fpsCount * 1000f / span;
-                    fpsCount = 0;
-                    fpsMark = SystemClock.elapsedRealtime();
-                }
+                recordSent();
             }
-            adapt(elapsed);
         } catch (Exception error) {
-            failedFrames++;
+            recordFailed();
             sourceReady = false;
             lastError = "сеть: " + error.getClass().getSimpleName()
                     + ": " + error.getMessage();
@@ -615,16 +743,25 @@ public class CameraStreamService extends Service implements LifecycleOwner {
         }
     }
 
-    private void adapt(long elapsed) {
-        long target = intervalMs;
-        if (elapsed > 300L) {
-            target = Math.min(MAX_INTERVAL_MS, target + 20L);
-        } else if (elapsed < 90L) {
-            long floor = Math.max(
-                    MIN_INTERVAL_MS, 1000L / Math.max(4, targetFps));
-            target = Math.max(floor, target - 10L);
+    /** Счётчики пишут несколько потоков — обновляем их под одним локом. */
+
+    private void recordFailed() {
+        synchronized (statsLock) {
+            failedFrames++;
         }
-        intervalMs = target;
+    }
+
+    private void recordSent() {
+        synchronized (statsLock) {
+            sentFrames++;
+            fpsCount++;
+            long span = SystemClock.elapsedRealtime() - fpsMark;
+            if (span >= 1000L) {
+                measuredFps = fpsCount * 1000f / span;
+                fpsCount = 0;
+                fpsMark = SystemClock.elapsedRealtime();
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -719,11 +856,9 @@ public class CameraStreamService extends Service implements LifecycleOwner {
 
     private static final class Frame {
         final byte[] jpeg;
-        final int rotation;
 
-        Frame(byte[] jpeg, int rotation) {
+        Frame(byte[] jpeg) {
             this.jpeg = jpeg;
-            this.rotation = rotation;
         }
     }
 }

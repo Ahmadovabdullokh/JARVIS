@@ -168,6 +168,7 @@
         "height": 480,
         "fps": 30,
         "stream_fps": 30,
+        "ingest_fps": 30,
         "analyze_fps": 12,
         "jpeg_quality": 88,
         "mirror": true,

@@ -117,12 +117,16 @@ WinForms, из-за чего импорт модуля падал. Патч об
   пресеты `performance`/`balanced`/`quality`, лёгкая резкость,
   `probe_cameras` с отсевом чёрных/виртуальных источников.
   `GET /camera.mjpg` отдаёт MJPEG по cookie или `stream_token`.
-- Камера телефона: приложение шлёт JPEG на
-  `POST /camera/frame?rotate=90&mirror=0|1` (Bearer,
+- Камера телефона: приложение шлёт уже повёрнутый и зеркалённый JPEG
+  на `POST /camera/frame?rotate=0&mirror=0` (Bearer,
   `X-Jarvis-Device`), сервер держит HTTP/1.1 keep-alive и принимает
   кадры только при `camera.source == "phone"` (иначе 409).
-  `submit_external_jpeg()` крутит кадр и зеркалит по `mirror`, кормит
-  HUD/жесты; `status()` отдаёт `phone_state` (`idle`/`live`/`stale`),
+  `submit_external_jpeg()` в этом случае не декодирует кадр, а
+  пересылает байты в MJPEG — приём ограничен `camera.ingest_fps`
+  (по умолчанию 30), а жестам кадр уходит не чаще `analyze_fps`.
+  Если `rotate`/`camera.mirror` всё же требуют преобразования,
+  кадр декодируется и кодируется заново на ПК; `status()` отдаёт
+  `phone_state` (`idle`/`live`/`stale`),
   `phone_device`, `phone_frames`. Если ответ 409/503, сервер сам
   переключает источник на `phone` (внутренний `bridge.handle`,
   consumer `phone`, не проходит через RPC-политику) — троттлинг
@@ -132,13 +136,15 @@ WinForms, из-за чего импорт модуля падал. Патч об
   автостартует (`ui_bridge._autostart_media`); устаревшие кадры
   (`phone_timeout`) не отдаются в `latest_jpeg`/`snapshot_jpeg`.
 - Android-камера: `CameraActivity` (превью, объектив, фонарик,
-  480p/720p/1080p, 5–20 fps, статус ПК через `get_camera`) +
+  480p/720p/1080p, 5–30 fps, статус ПК через `get_camera`) +
   `CameraStreamService` (foreground `type=camera`, CameraX 1.3.4
-  `ImageAnalysis` YUV→JPEG, адаптивный fps, keep-alive,
-  `EXTRA_LENS/FPS/WIDTH/HEIGHT`). Служба сама вызывает
-  `set_camera {source:"phone", mirror:...}` при старте/смене
-  объектива с backoff (3→30 c) и `{enabled:false}` при остановке;
-  на 401/403/409/503/IO сбрасывает `sourceReady` и повторяет.
+  `ImageAnalysis` YUV→NV21→JPEG, поворот и зеркало на телефоне,
+  три потока отправки, keep-alive, `EXTRA_LENS/FPS/WIDTH/HEIGHT`).
+  Служба сама вызывает `set_camera {source:"phone", mirror:false}`
+  при старте/смене объектива с backoff (3→30 c) и `{enabled:false}`
+  при остановке; на 401/403/409/503/IO сбрасывает `sourceReady`
+  и повторяет. После смены объектива кадры идут с
+  `rotate=0&mirror=0`: ПК не должен повторять преобразования.
   CameraX требует `android.useAndroidX=true`; версия 1.3.4 выбрана
   под compileSdk 34 (JPEG-выход `OUTPUT_IMAGE_FORMAT_JPEG` появился
   только в 1.4).
@@ -237,7 +243,9 @@ WinForms, из-за чего импорт модуля падал. Патч об
 - Low-профиль: камера 12 fps / JPEG 78 / sharpness 0.25 / 2 клиента,
   одна рука для жестов, overlay 6 fps, 3 потока инструментов, 2 потока
   задач, 40 схем на запрос, без category planning, polling 250 мс,
-  micro-meter 500 мс, лёгкий UI по умолчанию.
+  micro-meter 500 мс, лёгкий UI по умолчанию. `camera.ingest_fps`
+  профиль не урезает: сырой JPEG с телефона не декодируется и
+  остаётся на 30 fps.
 
 ## Проверки
 

@@ -45,6 +45,7 @@ DEFAULT_SETTINGS = {
     "height": 480,
     "fps": 30,
     "stream_fps": 30,
+    "ingest_fps": 30,
     "analyze_fps": 12,
     "jpeg_quality": 88,
     "mirror": True,
@@ -206,6 +207,12 @@ def _normalize_settings(settings):
     settings["stream_fps"] = _as_float(
         settings.get("stream_fps"), 30.0, 1.0, 60.0
     )
+    # Приём кадров с телефона не зависит от stream_fps: сырой JPEG
+    # можно пересылать в MJPEG почти бесплатно, а декодирование
+    # ограничивает analyze_fps.
+    settings["ingest_fps"] = _as_float(
+        settings.get("ingest_fps"), 30.0, 1.0, 60.0
+    )
     settings["analyze_fps"] = _as_float(
         settings.get("analyze_fps"), 12.0, 1.0, 60.0
     )
@@ -345,6 +352,8 @@ class CameraService:
         self._client_lock = threading.Lock()
         self._ingest_lock = threading.Lock()
         self._last_ingest_at = 0.0
+        self._notify_lock = threading.Lock()
+        self._last_notify_at = 0.0
         self._dropped_frames = 0
         self._external_at = 0.0
         self._external_device = ""
@@ -380,6 +389,7 @@ class CameraService:
             self._external_frames = 0
             self._dropped_frames = 0
             self._last_ingest_at = 0.0
+            self._last_notify_at = 0.0
             self._phone_state = "idle"
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -766,11 +776,17 @@ class CameraService:
             return bool(self._listeners)
 
     def _effective_ingest_fps(self):
+        """Сколько кадров с телефона принимаем в секунду.
+
+        Сырой JPEG пересылается в MJPEG без декодирования, поэтому
+        предел приёма задаёт ``ingest_fps``, а не ``stream_fps``
+        (это частота перекодирования для камеры ПК).
+        """
+
         try:
-            stream_fps = float(self._settings.get("stream_fps") or 0)
+            fps = float(self._settings.get("ingest_fps") or 0)
         except (TypeError, ValueError):
-            stream_fps = 0.0
-        fps = stream_fps
+            fps = 0.0
         if self.has_listeners():
             try:
                 analyze_fps = float(self._settings.get("analyze_fps") or 0)
@@ -805,7 +821,9 @@ class CameraService:
             angle = 0
 
         now = time.time()
-        min_interval = 1.0 / self._effective_ingest_fps()
+        # 10% допуск на джиттер сети: телефон, шлющий ровно 30 fps,
+        # иначе терял бы каждый второй кадр на границе интервала.
+        min_interval = 0.9 / self._effective_ingest_fps()
         with self._ingest_lock:
             if now - self._last_ingest_at < min_interval:
                 # Телефон шлёт быстрее, чем нужно; декодировать нечего.
@@ -813,9 +831,14 @@ class CameraService:
                 return ""
             self._last_ingest_at = now
 
-        if not angle and not self.has_listeners() and not self.has_clients():
-            # Никто не смотрит: храним оригинальный JPEG без декодирования
-            # и повторного кодирования (самая дорогая часть на i3).
+        mirrored = bool(self._settings.get("mirror"))
+        needs_transform = bool(angle) or mirrored
+        notify_due = self._ingest_notify_due(now)
+
+        if not needs_transform and not notify_due:
+            # Телефон уже отдал готовый JPEG (поворот/зеркало сделаны
+            # на нём): пересылаем байты в MJPEG без декодирования —
+            # это позволяет держать 30 fps на i3.
             width, height = _jpeg_dimensions(jpeg)
             with self._frame_lock:
                 self._raw_jpeg = bytes(jpeg)
@@ -847,12 +870,11 @@ class CameraService:
         elif angle == 270:
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
-        mirrored = bool(self._settings.get("mirror"))
         if mirrored:
             frame = cv2.flip(frame, 1)
 
         encoded = b""
-        if angle or mirrored:
+        if needs_transform:
             encoded = self._encode_jpeg(frame)
 
         height, width = frame.shape[:2]
@@ -867,8 +889,29 @@ class CameraService:
             self._external_frames += 1
             if device:
                 self._external_device = str(device).strip()[:64]
-        self._notify(frame.copy())
+        if notify_due:
+            self._notify(frame.copy())
         return ""
+
+    def _ingest_notify_due(self, now):
+        """Пора ли отдавать кадр подписчикам (жестам).
+
+        Декодирование ограничено ``analyze_fps``, чтобы MediaPipe не
+        забирал CPU на каждом из 30 кадров с телефона.
+        """
+
+        if not self.has_listeners():
+            return False
+        try:
+            analyze_fps = float(self._settings.get("analyze_fps") or 0)
+        except (TypeError, ValueError):
+            analyze_fps = 0.0
+        interval = 1.0 / max(1.0, analyze_fps or 8.0)
+        with self._notify_lock:
+            if now - self._last_notify_at < interval:
+                return False
+            self._last_notify_at = now
+            return True
 
     # ------------------------------------------------------------------
     # Чтение состояния
@@ -898,7 +941,10 @@ class CameraService:
         with self._frame_lock:
             if (
                 self._overlay_jpeg
-                and now - self._overlay_jpeg_at < 2.0
+                # Свежесть чуть больше интервала overlay (6–12 fps):
+                # после того как руки убраны, стрим быстро возвращается
+                # к сырому потоку телефона.
+                and now - self._overlay_jpeg_at < 1.0
             ):
                 return self._overlay_jpeg
             if self._raw_jpeg:
@@ -958,6 +1004,7 @@ class CameraService:
             "capture_fps": self._capture_fps,
             "requested_fps": settings.get("fps", 30),
             "stream_fps": settings.get("stream_fps", 30),
+            "ingest_fps": settings.get("ingest_fps", 30),
             "analyze_fps": settings.get("analyze_fps", 12),
             "jpeg_quality": settings.get("jpeg_quality", 88),
             "backend": self._actual_backend

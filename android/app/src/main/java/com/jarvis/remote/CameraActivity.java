@@ -48,7 +48,7 @@ public class CameraActivity extends Activity implements LifecycleOwner {
             {1280, 720},
             {1920, 1080},
     };
-    private static final int[] FPS_VALUES = {5, 10, 15, 20};
+    private static final int[] FPS_VALUES = {5, 10, 15, 20, 30};
 
     private final LifecycleRegistry lifecycle = new LifecycleRegistry(this);
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -73,7 +73,7 @@ public class CameraActivity extends Activity implements LifecycleOwner {
     private int boundLens = -1;
 
     private int lens = CameraStreamService.LENS_BACK;
-    private int fps = 10;
+    private int fps = 30;
     private int resolutionIndex = 0;
     private boolean torch = false;
     private boolean alive = true;

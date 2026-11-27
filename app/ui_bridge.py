@@ -726,6 +726,7 @@ class UiBridge:
             "height",
             "fps",
             "stream_fps",
+            "ingest_fps",
             "analyze_fps",
             "jpeg_quality",
             "mirror",
